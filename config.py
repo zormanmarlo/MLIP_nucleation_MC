@@ -21,7 +21,7 @@ class Config:
             'internal_interval', 'seed', 'bias_type', 'avbmc_rate', 'nvt_rate',
             'translation_rate', 'swap_rate', 'max_displacement', 'upper_cutoff',
             'lower_cutoff', 'clust_cutoff', 'ff_path', 'input_path', 'kT', 'ratio',
-            'input_file', 'lower_energy_cutoff', 'energy_cutoff', 'concentration', 'n_rosenbluth_trials'
+            'input_file', 'lower_energy_cutoff', 'energy_cutoff', 'concentration', 'debug_mode'
         ]
         for param in self.default_params:
             if param not in self.parameters:
@@ -42,6 +42,8 @@ class Config:
                         parameters[key] = int(value)
                     elif is_float(value):
                         parameters[key] = float(value)
+                    elif value.lower() in ['true', 'false']:
+                        parameters[key] = value.lower() == 'true'
                     else:
                         if value.lower() == "none":
                             parameters[key] = None
@@ -92,11 +94,11 @@ class Config:
         # if no energy_cutoff is provided, default to 20.0
         if 'energy_cutoff' not in self.parameters:
             self.parameters['energy_cutoff'] = 20
-        
-        # if no n_rosenbluth_trials is provided, default to 32
-        if 'n_rosenbluth_trials' not in self.parameters:
-            self.parameters['n_rosenbluth_trials'] = 32
-        
+
+        # if no debug_mode is provided, default to False
+        if 'debug_mode' not in self.parameters:
+            self.parameters['debug_mode'] = False
+
         # Parse the ratio
         self._parse_ratio()
 

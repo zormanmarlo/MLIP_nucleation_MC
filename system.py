@@ -13,9 +13,11 @@ class System:
         self.box_length = config.box_length
         self.num_particles = config.num_particles
         self.kT = config.kT
+        self.energy = 0.0
+        self.bias_energy = 0.0
+        self.debug_mode = getattr(config, 'debug_mode', False)
 
         self.id = str(id).zfill(2)
-        self.pmf = PMF("potentials/"+config.ff_path)
         self.seed = config.seed + id
         np.random.seed(self.seed)
         
@@ -39,6 +41,12 @@ class System:
         self.bias = None
         if config.bias_type is not None:
             self.bias = config.bias
+    
+    def init_pmf(self):
+        '''Initialize PMF object with potential file from config'''
+        charge_map = {0: 1.0, 1: -1.0}  # Example charge mapping for two types
+        self.charges = [charge_map[t] for t in self.types]
+        self.pmf = PMF(self.types, self.charges, self.box_length)
 
     def init_positions(self, input_path=None, multi=False):
         '''Initialize particle positions either from input file or randomly, ensuring proper ratios and minimum separations'''
@@ -121,84 +129,105 @@ class System:
         
         self.positions = np.array(self.positions)
         self.types = np.array(self.types)
-        
+
         self.target_clust_idx = self.find_target_cluster()
-        self.calc_full_energy()
+        self.init_pmf()
+        self.energy = 0.0  # Will be calculated in equilibration/production run
 
-    def step(self):
+    def step(self, step_num=0):
         '''Execute one Monte Carlo step by randomly selecting and attempting a move'''
-        # iterate over all particles in system
-        for particle in range(self.num_particles):
-            # Dynamic move selection using probabilities from configq
-            move_idx = np.random.choice(len(self.active_moves), p=self.move_probabilities)
+        # Dynamic move selection using probabilities from config
+        if not self.active_moves:
+            return  # No moves configured
 
-            # Update target cluster, if particle is not in it, skip NVT move
-            if 'nvt' in self.move_names[move_idx]:
-                self.target_clust_idx = self.find_target_cluster()
-            while particle not in self.target_clust_idx and 'nvt' in self.move_names[move_idx]:
-                move_idx = np.random.choice(len(self.active_moves), p=self.move_probabilities)
-            
-            selected_move = self.active_moves[move_idx]
-            move_name = self.move_names[move_idx]
+        energy_before = self.energy
 
+        move_idx = np.random.choice(len(self.active_moves),
+                                   p=self.move_probabilities)
+        selected_move = self.active_moves[move_idx]
+        move_name = self.move_names[move_idx]
+
+        # Handle move-specific parameter requirements
+        particle = np.random.randint(self.config.num_particles)
+
+        if 'nvt' in move_name:
             # NVT moves need special handling
-            if 'nvt' in move_name or 'avbmc' in move_name:
-                # pick random particle type to calculate Nin
-                part_type = np.random.choice(np.unique(self.types))
-                Nin, Nin_idx = self.calc_in(particle, part_type=part_type)
-                selected_move.attempt_move(particle, Nin_idx, part_type)
-            else:
+            self.find_target_cluster()
+            particle = np.random.choice(self.target_clust_idx)
+            Nin, Nin_idx = self.calc_in(particle)
+            selected_move.attempt_move(particle, Nin_idx)
+
+        elif move_name == 'inout_avbmc':
+            # Check if inout move is possible, fallback to outin if not
+            Nin, Nin_idx = self.calc_in(particle)
+            if self.debug_mode:
+                logging.info(f"InOut selected: particle {particle}, Nin = {Nin}")
+            if Nin >= 1:
+                # Particle has neighbors, inout move is possible
+                if self.debug_mode:
+                    logging.info(f"  -> Attempting InOut move")
                 selected_move.attempt_move(particle)
+            else:
+                # No neighbors, fallback to outin move
+                if self.debug_mode:
+                    logging.info(f"  -> Falling back to OutIn move (no neighbors)")
+                for move_idx, move_name in enumerate(self.move_names):
+                    if move_name == 'outin_avbmc':
+                        self.active_moves[move_idx].attempt_move(particle)
+                        break
+        else:
+            selected_move.attempt_move(particle)
+
+        # Debug logging for large energy changes
+        if self.debug_mode:
+            energy_change = self.energy - energy_before
+            if abs(energy_change) > 10000:  # Flag jumps > 10,000 kcal/mol
+                recalc_energy = self.calc_full_energy()
+                logging.warning(f"LARGE ENERGY JUMP at step {step_num}:")
+                logging.warning(f"  Move: {move_name}, Particle: {particle}")
+                logging.warning(f"  Energy before: {energy_before:.2f}")
+                logging.warning(f"  Energy after (cached): {self.energy:.2f}")
+                logging.warning(f"  Energy after (recalc): {recalc_energy:.2f}")
+                logging.warning(f"  Delta (cached): {energy_change:.2f}")
+                logging.warning(f"  Cache error: {abs(self.energy - recalc_energy):.2f}")
+
+                # Print AVBMC-specific debug info if available
+                if hasattr(selected_move, 'debug_avbmc_energy'):
+                    logging.warning(f"  --- AVBMC Details ---")
+                    if selected_move.debug_wnew is not None:
+                        logging.warning(f"  Rosenbluth wnew: {selected_move.debug_wnew:.6e}")
+                        logging.warning(f"  Rosenbluth wold: {selected_move.debug_wold:.6e}")
+                        logging.warning(f"  wnew/wold ratio: {selected_move.debug_components['rosenbluth_ratio']:.6e}")
+                    logging.warning(f"  AVBMC acceptance prob: {selected_move.debug_avbmc_energy:.6e}")
+                    logging.warning(f"  Components:")
+                    for key, value in selected_move.debug_components.items():
+                        logging.warning(f"    {key}: {value:.6e}")
 
     def calc_energy_delta(self, particle_idx, new_pos, old_pos):
         '''Calculate energy difference between new and old positions, including bias energy if applicable'''
         if self.bias is None:
-            self.positions[particle_idx] = old_pos
-            old_energy = self.calc_energy(particle_idx)
+            old_energy = self.energy
             self.positions[particle_idx] = new_pos
-            new_energy = self.calc_energy(particle_idx)
+            new_energy = self.calc_full_energy()
             delta_energy = new_energy - old_energy
             delta_bias_energy = 0.0
         # If bias is active must calculate change in cluster size
         else:
-            old_cluster = self.find_target_cluster()
-            old_cluster_len = len(old_cluster)
-            self.positions[particle_idx] = old_pos
-            old_energy = self.calc_energy(particle_idx)
+            old_cluster = len(self.find_target_cluster())
+            old_energy = self.energy
             self.positions[particle_idx] = new_pos
-            new_cluster = self.find_target_cluster()
-            new_cluster_len = len(new_cluster)
-            new_energy = self.calc_energy(particle_idx)
+            new_cluster = len(self.find_target_cluster())
+            new_energy = self.calc_full_energy()
             delta_energy = new_energy - old_energy
-            delta_bias_energy = self.bias.denergy(new_cluster_len, old_cluster_len)
+            delta_bias_energy = self.bias.denergy(new_cluster, old_cluster)
 
         self.positions[particle_idx] = old_pos  # Reset position after calculation
         return delta_energy, delta_bias_energy
-
-    def calc_energy(self, particle_idx):
-        '''Calculate total energy of a particle with all other particles using tabulated PMF'''
-        return calc_energy_numba(
-            self.positions, self.types, particle_idx, 
-            self.config.lower_energy_cutoff, self.config.energy_cutoff,
-            self.box_length, self.pmf.sorted_distances,
-            self.pmf.energy_columns[0], self.pmf.energy_columns[1], self.pmf.energy_columns[2]
-        )
     
     def calc_full_energy(self):
-        '''Calculate total system energy including bias contribution if applicable'''
-        # Calculate total energy of the system
-        self.energy = 0.0
-        for i in range(self.num_particles):
-            self.energy += self.calc_energy(i)
-        self.energy /= 2.0  # Each interaction counted twice
+        '''Calculate total energy of the system using physics prior and MLP'''
+        return self.pmf.energies(self.positions)
 
-        # Set initial bias energy if applicable
-        if self.bias is not None:
-            self.bias_energy = self.bias.energy(len(self.target_clust_idx))
-        else:
-            self.bias_energy = 0.0
-        return self.energy
-    
     def find_target_cluster(self, target_idx=0):
         '''Find all particles connected to target particle within cluster cutoff distance using breadth-first search'''        
         # Start with the target particle
@@ -217,8 +246,6 @@ class System:
                     # if neighbor not in visited:
                         # queue.append(neighbor)
                 neighbors = find_neighbors_numba(self.positions, self.positions[current], self.clust_cutoff, self.box_length)
-                # check if nieghbors are different type from target particle
-                neighbors = [n for n in neighbors if self.types[n] != self.types[current]]
                 queue.extend([n for n in neighbors if n not in visited])
         
         # Cluster around target particle found
@@ -243,8 +270,7 @@ class System:
                         visited[current] = True
                         cluster.append(current)
                         for neighbor in neighbor_lists[current]:
-                            # if not visited[neighbor]:
-                            if not visited[neighbor] and self.types[neighbor] != self.types[current]:
+                            if not visited[neighbor]:
                                 queue.append(neighbor)
                 clusters.append(cluster)
 
@@ -261,8 +287,9 @@ class System:
                     return True
         return False
         
-    def calc_in(self, particle_idx, part_type=None):
-        '''Calculate neighbors within cluster cutoff distance using PBC distances'''
+    def calc_in(self, particle_idx):
+        '''Calculate neighbors within cluster cutoff distance using PBC distances.'''
+        # Calculate distances from particle to all others with PBC
         pos = self.positions[particle_idx]
         pos_diff = self.positions - pos
         pos_diff = pos_diff - self.box_length * np.round(pos_diff / self.box_length)
@@ -271,15 +298,11 @@ class System:
         # Find neighbors within cutoff (excluding the particle itself)
         within_cutoff = (distances < self.clust_cutoff) & (distances > 0.0)
         neighbors = np.where(within_cutoff)[0].tolist()
-        # select only neighbors of type that is specified
-        if part_type is not None:
-            neighbors = [n for n in neighbors if self.types[n] != part_type]
         
         Nin = len(neighbors)
         Nin_idx = neighbors
         
         return Nin, Nin_idx
-
     
     def calc_dist(self, pos1, pos2):
         '''Calculate minimum image distance between two positions with periodic boundary conditions'''

@@ -119,7 +119,7 @@ def find_neighbors_numba(positions, pos1, cutoff, box_length):
     return neighbors
 
 
-@njit(cache=False)
+@njit
 def calc_coulombic_numba(positions, charges, box_size, cutoff, alpha, ke_eff):
     '''Calculate electrostatic energy using Wolf summation with PBC (numba-optimized).
 
@@ -160,10 +160,6 @@ def calc_coulombic_numba(positions, charges, box_size, cutoff, alpha, ke_eff):
             if r >= cutoff:
                 continue
 
-            # Handle overlapping particles (shouldn't happen in well-behaved simulation)
-            if r < 0.01:  # particles closer than 0.01 Angstrom
-                return 1e10  # Return very high energy to reject this configuration
-
             qi = charges[i]
             qj = charges[j]
 
@@ -188,7 +184,7 @@ def calc_coulombic_numba(positions, charges, box_size, cutoff, alpha, ke_eff):
     return total_energy
 
 
-@njit(cache=False)
+@njit
 def calc_lj_numba(positions, types, box_size, cutoff, epsilon_matrix, sigma_matrix):
     '''Calculate Lennard-Jones interaction energy with PBC (numba-optimized).
 
@@ -232,10 +228,6 @@ def calc_lj_numba(positions, types, box_size, cutoff, epsilon_matrix, sigma_matr
             # Skip if beyond cutoff
             if r >= cutoff:
                 continue
-
-            # Handle overlapping particles (shouldn't happen in well-behaved simulation)
-            if r < 0.01:  # particles closer than 0.01 Angstrom
-                return 1e10  # Return very high energy to reject this configuration
 
             # Calculate LJ energy: U_LJ = 4*epsilon*[(sigma/r)^12 - (sigma/r)^6]
             sigma_over_r = sigma / r
@@ -282,35 +274,18 @@ class PMF:
             [3.31, 4.036]    # Cl-Na, Cl-Cl
         ], dtype=np.float64)
 
-        # NequIP setup - LAZY LOADING (defer model loading until first use)
+        # NequIP setup
         self.atoms = Atoms(symbols=self.symbols, positions=np.zeros((len(self.types), 3)), cell=[box_size]*3, pbc=True)
-        self.atoms.calc = None  # Ensure no calculator is attached to atoms object
-        # Store model configuration instead of loading immediately
-        self.model_path = '../ML_training/dang/2M_training_100k_frames/results/ase_best_a40.nequip.pth'
-        self.device = 'cuda'
-        self.chemical_symbols = ['Na', 'Cl']
-        self.calc = None  # Model will be loaded on first call to energies()
-
-    def _ensure_model_loaded(self):
-        '''Load the NequIP model on first use (lazy loading for multiprocessing compatibility)'''
-        if self.calc is None:
-            self.calc = NequIPCalculator.from_compiled_model(
-                compile_path=self.model_path,
-                device=self.device,
-                chemical_symbols=self.chemical_symbols
-            )
-            self.atoms.calc = self.calc
+        self.calc = NequIPCalculator.from_compiled_model(compile_path='../ML_training/dang/2M_training_100k_frames/results/ase_best_a40.nequip.pth', device='cuda', chemical_symbols=['Na', 'Cl'])
 
     def energies(self, positions):
         '''Calculate total energy with physics priors and MLP'''
-        # Ensure model is loaded (only happens once per process)
-        self._ensure_model_loaded()
-
         physics_prior_energies = self.calc_prior_energies(positions)
-
+        
         self.atoms.set_positions(positions)
+        self.atoms.calc = self.calc
         energy = self.atoms.get_potential_energy()
-
+    
         total_energy = physics_prior_energies + energy
         # convert from eV to kcal/mol
         total_energy *= 23.0609

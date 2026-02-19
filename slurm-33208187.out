@@ -1,0 +1,29 @@
+SLURM_JOBID=33208187
+SLURM_JOB_NODELIST=g3116
+SLURM_NNODES=1
+SLURMTMPDIR=
+working directory = /mmfs1/gscratch/cheme/mzorman/06_MLP/driver
+INFO - Starting job: ../NaCl_jobs/2M_adapUS
+WARNING - Parameter 'bias_file' not set for linear bias. Setting bias to zero
+INFO - Concentration: 2.0 M
+INFO - Box length: 59.2092764500872 Å
+INFO - Number of particles: 500
+INFO - Bias: linear
+INFO - Using seed from config file: 11
+Traceback (most recent call last):
+  File "/mmfs1/gscratch/cheme/mzorman/06_MLP/driver/simulation.py", line 175, in <module>
+    simulations = pool.map(equilibration_run, simulations, True)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/gscratch/cheme/mzorman/03_misc/miniconda3/envs/mlp_cuda/lib/python3.12/multiprocessing/pool.py", line 367, in map
+    return self._map_async(func, iterable, mapstar, chunksize).get()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/gscratch/cheme/mzorman/03_misc/miniconda3/envs/mlp_cuda/lib/python3.12/multiprocessing/pool.py", line 774, in get
+    raise self._value
+  File "/gscratch/cheme/mzorman/03_misc/miniconda3/envs/mlp_cuda/lib/python3.12/multiprocessing/pool.py", line 540, in _handle_tasks
+    put(task)
+  File "/gscratch/cheme/mzorman/03_misc/miniconda3/envs/mlp_cuda/lib/python3.12/multiprocessing/connection.py", line 206, in send
+    self._send_bytes(_ForkingPickler.dumps(obj))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/gscratch/cheme/mzorman/03_misc/miniconda3/envs/mlp_cuda/lib/python3.12/multiprocessing/reduction.py", line 51, in dumps
+    cls(buf, protocol).dump(obj)
+RuntimeError: Tried to serialize object __torch__.nequip.nn.graph_model.___torch_mangle_0.GraphModel which does not have a __getstate__ method defined!

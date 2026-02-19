@@ -113,47 +113,17 @@ def equal_hist(dist):
 
 def production_run(sim):
     '''Execute production phase of simulation with periodic output writing'''
-    # Ensure energy is initialized (in case production_run is called directly)
-    if sim.system.energy == 0.0:
-        sim.system.energy = sim.system.calc_full_energy()
     for s in range(1, sim.config.parameters["prod_steps"]):
         sim.system.step(step_num=s)
         if s % sim.config.parameters["output_interval"] == 0:
             sim.write_output(s)
-    return None  # Don't return sim - can't pickle after model loads
-
-def production_run_adapUS(sim):
-    '''Production run for adaptive US - reads bias from file, returns statistics and positions'''
-    # Read updated bias from file if it exists
-    bias_file = f'{sim.output_dir}/bias_potential.npy'
-    if os.path.exists(bias_file):
-        updated_bias = np.load(bias_file)
-        sim.system.bias.bias = updated_bias
-
-    # Initialize energy if needed
-    if sim.system.energy == 0.0:
-        sim.system.energy = sim.system.calc_full_energy()
-
-    # Run simulation
-    for s in range(1, sim.config.parameters["prod_steps"]):
-        sim.system.step(step_num=s)
-        if s % sim.config.parameters["output_interval"] == 0:
-            sim.write_output(s)
-
-    # Return statistics and state (picklable!)
-    return {
-        'target_sizes': sim.target_sizes,
-        'positions': sim.system.positions.copy(),
-        'energy': sim.system.energy,
-        'ID': sim.ID
-    }
+    return sim
 
 def equilibration_run(sim):
     '''Execute equilibration phase with dynamic adjustment of translation move displacement'''
-    sim.system.energy = sim.system.calc_full_energy()
     for s in range(1, sim.config.parameters["equil_steps"]):
         sim.system.step(step_num=s)
-    return None  # Don't return sim - can't pickle after model loads
+    return sim
 
 if __name__ == "__main__":
     # Parse command line for settings
@@ -194,78 +164,60 @@ if __name__ == "__main__":
             with mp.Pool(processes=args.np) as pool:
                 logger.info(f"Running {args.np} markov chains")
                 logger.info("Running equilibration")
-                pool.map(equilibration_run, simulations)
+                simulations = pool.map(equilibration_run, simulations)
                 logger.info("Running production")
-                pool.map(production_run, simulations)
+                simulations = pool.map(production_run, simulations)
 
     # Run until potentials are converged
     else:
         # Run unbiased simulation
         with mp.Pool(processes=args.np) as pool:
-            pool.map(equilibration_run, simulations)
-            pool.map(production_run, simulations)
-
-        # Initialize target_sizes for each simulation (collected from initial run)
-        for sim in simulations:
-            sim.target_sizes = []
+            simulations = pool.map(equilibration_run, simulations, True)
+            simulations = pool.map(production_run, simulations)
 
         # Run biased simulations, iteratively updating bias
         logger.info("Generating initial bias")
         cont = True
         orig_prod_steps = simulations[0].config.parameters["prod_steps"]
         current_it = 0
-        bias_file = f"{args.path}/{args.jobname}/bias_potential.npy"
-
         while cont:
             current_it += 1
+            pkl.dump(simulations, open(f"{args.jobname}/system.pkl", "wb"))
 
-            # Run production in workers
-            with mp.Pool(processes=args.np) as pool:
-                results = pool.map(production_run_adapUS, simulations)
-
-            # Unpack results from workers and update simulation state
-            for result in results:
-                worker_id = int(result['ID'])
-                simulations[worker_id].target_sizes = result['target_sizes']
-                simulations[worker_id].system.positions = result['positions']
-                simulations[worker_id].system.energy = result['energy']
-
-            # Aggregate statistics
             cluster_counts = np.concatenate([sim.target_sizes for sim in simulations])
             dist = np.histogram(cluster_counts, bins=np.arange(1, simulations[0].config.parameters["max_target"]+2))[0]
-
-            with open(f"{args.path}/{args.jobname}/histograms.out", "a") as file:
+            with open(f"{args.jobname}/histograms.out", "a") as file:
                 file.write(f"{dist}\n")
 
-            # Update bias in main process
             for sim in simulations:
                 sim.system.bias.update(dist)
-                sim.target_sizes = []  # Reset for next iteration
+                # Reset data after each iteration, unclear if this is the best way to do this
+                sim.system.target_sizes = []
+                sim.target_sizes = []
                 if all(dist > 0):
-                    sim.config.parameters["prod_steps"] = sim.config.parameters["prod_steps"] + int(orig_prod_steps*0.2)
-
-            # Save updated bias to file for workers to read next iteration
+                    sim.system.config.parameters["prod_steps"] = sim.system.config.parameters["prod_steps"] + int(orig_prod_steps*0.2)
             potential = simulations[0].system.bias.bias
-            np.save(bias_file, potential)
-
-            with open(f"{args.path}/{args.jobname}/potentials.out", "a") as file:
+            with open(f"{args.jobname}/potentials.out", "a") as file:
                 file.write(f"{potential}\n")
 
-            logger.info(f"Iteration {current_it}: Updated bias saved to {bias_file}")
+            with mp.Pool(processes=args.np) as pool:
+                simulations = pool.map(production_run, simulations, True)
+            print("updating bias")
 
             if equal_hist(dist):
-                logger.info(f"Potential converged in {current_it} iterations -- ending run")
+                print(f"potential converged in {current_it} iterations -- ending run")
                 potential = simulations[0].system.bias.bias
 
-                # Save final outputs
-                with open(f"{args.path}/{args.jobname}/histograms.out", "a") as file:
+                # Save final system
+                sizes = np.concatenate([sim.target_sizes[-2 * sim.config.parameters["num_steps"] // sim.config.parameters["output_interval"]:] for sim in simulations])
+                dist = np.histogram(sizes, bins=np.arange(1, simulations[0].config.parameters["max_target"]+2))[0]
+                with open(f"{args.jobname}/histograms.out", "a") as file:
                     file.write("FINAL HISTOGRAM:\n")
                     file.write(f"{dist}\n")
-                with open(f"{args.path}/{args.jobname}/potentials.out", "a") as file:
+                with open(f"{args.jobname}/potentials.out", "a") as file:
                     file.write("FINAL POTENTIAL:\n")
-                    file.write(f"{potential}\n")
+                    file.write(f"{potential[-1]}\n")
 
-                # Save final bias potential
-                np.save(f"{args.path}/{args.jobname}/final_bias_potential.npy", potential)
+                pkl.dump(simulations, open(f"{args.jobname}/system.pkl", "wb"))
                 cont = False
 
