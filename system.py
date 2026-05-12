@@ -2,9 +2,9 @@ import numpy as np
 from numba import njit
 from scipy.spatial import cKDTree
 from collections import deque
-
-from utils import *
 import logging
+
+from utils import PMFLammps
 
 class System:
     def __init__(self, config, id=0):
@@ -15,19 +15,44 @@ class System:
         self.kT = config.kT
         self.energy = 0.0
         self.bias_energy = 0.0
-        self.debug_mode = getattr(config, 'debug_mode', False)
 
         self.id = str(id).zfill(2)
         self.seed = config.seed + id
         np.random.seed(self.seed)
-        
+
+        # Track current step number for logging
+        self.current_step = 0
+
+        # Set up Ca-Ca proximity logger (will be configured in simulation.py)
+        self.ca_logger = None
+
         # Initialize atomic properties
         self.positions = []
         self.types = []
         self.target_clust_idx = []
         self.cluster_sizes = []
         self.clust_cutoff = config.clust_cutoff
-        
+
+        # Initialize molecular properties
+        self.molecules = []  # List of tuples: each tuple contains atom indices for that molecule
+        self.molecule_type = []  # Array of molecule types (0=Ca, 1=CO3, etc.)
+        self.num_molecules = 0
+
+        # Load rigid molecular geometries from .body files (body frame coordinates)
+        # Molecule type 0: Ca (single atom, no geometry needed)
+        # Molecule type 1: CO3 (loaded from file)
+        self.molecular_geometries = {}
+        if hasattr(config, 'body_file') and config.body_file:
+            self.molecular_geometries[1] = self._load_body_file(config.body_file)
+        else:
+            # Default CO3 geometry if no file specified
+            self.molecular_geometries[1] = np.array([
+                [0.0, 0.0, 0.0],
+                [1.29, 0.0, 0.0],
+                [-0.645, 1.117, 0.0],
+                [-0.645, -1.117, 0.0]
+            ])
+
         # Initialize move objects dynamically from config
         self.active_moves = []
         self.move_names = []
@@ -42,225 +67,318 @@ class System:
         if config.bias_type is not None:
             self.bias = config.bias
     
+    def _load_body_file(self, filepath):
+        '''Load reference body frame geometry from .body file (x, y, z coordinates in Angstroms)'''
+        positions = []
+        with open(filepath, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
+                        positions.append([x, y, z])
+        return np.array(positions)
+
     def init_pmf(self):
-        '''Initialize PMF object with potential file from config'''
-        charge_map = {0: 1.0, 1: -1.0}  # Example charge mapping for two types
-        self.charges = [charge_map[t] for t in self.types]
-        self.pmf = PMF(self.types, self.charges, self.box_length)
+        '''Initialize energy calculator (LAMMPS or debug soft-sphere potential)'''
+        if hasattr(self.config, 'debug_potential') and self.config.debug_potential:
+            from debug_potentials import SoftSpherePotential
+            print("Using debug")
+            self.pmf = SoftSpherePotential(epsilon=1.0, sigma=2.0, cutoff=self.config.upper_cutoff)
+            logging.info("Using debug soft-sphere potential")
+        else:
+            charge_map = {0: 2.0, 1: 0.9, 2: -1.3}  # Ca: +2, C: +0.9, O: -1.3 (carbonate partial charges)
+            self.charges = [charge_map[t] for t in self.types]
+            self.pmf = PMFLammps(self.types, self.charges, self.box_length, self.config.model_path)
 
     def init_positions(self, input_path=None, multi=False):
-        '''Initialize particle positions either from input file or randomly, ensuring proper ratios and minimum separations'''
+        '''Build molecular system with Ca atoms (1 atom each) and rigid CO3 molecules (4 atoms each)'''
+        from utils import random_rotation_matrix
+
         if input_path:
-            filename = input_path.strip(".xyz") + f"_{self.id}.xyz" if multi else input_path
-            with open(f"inputs/{filename}", 'r') as f:
-                lines = f.readlines()
-
-            data_lines = lines[2:]
-            part_types = {line.split()[0] for line in data_lines}
-            num_parts = len(data_lines)
-
-            if num_parts != self.num_particles:
-                raise ValueError(f"{filename} has {num_parts} particles, expected {self.num_particles}")
-            if len(part_types) != 2:
-                raise ValueError(f"{filename} must contain exactly two particle types, found {len(part_types)}: {part_types}")
-
-            part_types = list(part_types)
-            assign_value = lambda atom: 0 if atom == part_types[0] else 1
-
-            for line in data_lines:
-                atom, x, y, z = line.split()
-                self.positions.append(np.array([float(x), float(y), float(z)]))
-                self.types.append(assign_value(atom))
-
-            type_counts = [self.types.count(0), self.types.count(1)]
-            expected = lambda r: (self.num_particles // self.config.total_ratio) * r
-            expected_type1 = expected(self.config.ratio_type1)
-            expected_type2 = expected(self.config.ratio_type2)
-
-            if type_counts != [expected_type1, expected_type2]:
-                print(f"WARNING: Input ratio {type_counts[0]}:{type_counts[1]} ≠ expected {expected_type1}:{expected_type2}")
+            raise NotImplementedError("Molecular input files not yet implemented")
 
         else:
-            # Calculate number of each ion type based on ratio
-            formula_units = self.num_particles // self.config.total_ratio
-            n_type1 = formula_units * self.config.ratio_type1
-            n_type2 = formula_units * self.config.ratio_type2
-            
-            is_valid = lambda pos, existing: all(
-                np.linalg.norm(
-                    np.mod(pos - p + 0.5 * self.box_length, self.box_length) - 0.5 * self.box_length
-                ) >= self.config.lower_energy_cutoff
-                for p in existing
+            # For CaCO3: num_particles is total ATOMS, ratio is Ca:CO3 MOLECULES
+            # Each CaCO3 formula unit = 1 Ca (1 atom) + 1 CO3 (4 atoms) = 5 atoms total
+            # For ratio 1:1, we have equal number of Ca and CO3 molecules
+
+            atoms_per_formula_unit = 1 * self.config.ratio_type1 + 4 * self.config.ratio_type2  # Ca atoms + CO3 atoms
+            formula_units = self.num_particles // atoms_per_formula_unit
+
+            n_ca = formula_units * self.config.ratio_type1   # Number of Ca molecules
+            n_co3 = formula_units * self.config.ratio_type2  # Number of CO3 molecules
+
+            # Verify total atoms matches
+            expected_atoms = n_ca + 4 * n_co3
+            if expected_atoms != self.num_particles:
+                raise ValueError(f"num_particles={self.num_particles} must be multiple of {atoms_per_formula_unit}. Got {n_ca} Ca + {n_co3} CO3 = {expected_atoms} atoms")
+
+            # Overlap checking: ensure molecular COMs are separated
+            is_valid_com = lambda com, existing_coms: all(
+                self.calc_dist(com, existing_com) >= self.config.lower_energy_cutoff
+                for existing_com in existing_coms
             )
 
-            # populate first ion type
-            for _ in range(n_type1):
+            com_positions = []  # Track all molecular COMs for overlap checking
+
+            # Place Ca²⁺ ions (single-atom molecules)
+            for _ in range(n_ca):
                 tries = 0
                 while True:
-                    position = np.round(np.random.rand(3) * self.box_length, 3)
-                    if is_valid(position, self.positions):
-                        self.positions.append(position)
-                        self.types.append(0)
+                    com = np.round(np.random.rand(3) * self.box_length, 3)
+                    if is_valid_com(com, com_positions):
+                        atom_idx = len(self.positions)
+                        self.positions.append(com)
+                        self.types.append(0)  # Atom type: Ca
+                        self.molecules.append((atom_idx,))  # Single-atom molecule
+                        self.molecule_type.append(0)  # Molecule type: Ca
+                        com_positions.append(com)
                         break
                     tries += 1
                     if tries >= 1000:
-                        logging.warning(f"Could not place type 0 particle after 1000 tries. Placing anyway (may overlap).")
-                        logging.warning(f"Energy may jump significantly due to overlap.")
-                        self.positions.append(position)
+                        logging.warning(f"Could not place Ca after 1000 tries. Placing anyway (may overlap).")
+                        atom_idx = len(self.positions)
+                        self.positions.append(com)
                         self.types.append(0)
+                        self.molecules.append((atom_idx,))
+                        self.molecule_type.append(0)
+                        com_positions.append(com)
                         break
 
-            # populate second ion type
-            for _ in range(n_type2):
+            # Place CO3²⁻ molecules (4 atoms each: C + 3 O)
+            for _ in range(n_co3):
                 tries = 0
                 while True:
-                    position = np.round(np.random.rand(3) * self.box_length, 3)
-                    if is_valid(position, self.positions):
-                        self.positions.append(position)
-                        self.types.append(1)
+                    com = np.round(np.random.rand(3) * self.box_length, 3)
+                    if is_valid_com(com, com_positions):
+                        # Generate random orientation
+                        rotation = random_rotation_matrix()
+
+                        # Get reference geometry and apply rotation
+                        ref_geom = self.molecular_geometries[1].copy()  # CO3 geometry
+                        rotated_geom = ref_geom @ rotation.T
+
+                        # Place all atoms in molecule
+                        atom_indices = []
+                        for i, local_pos in enumerate(rotated_geom):
+                            atom_pos = (com + local_pos) % self.box_length
+                            atom_idx = len(self.positions)
+                            self.positions.append(atom_pos)
+                            if i == 0:
+                                self.types.append(1)  # C atom
+                            else:
+                                self.types.append(2)  # O atom
+                            atom_indices.append(atom_idx)
+
+                        self.molecules.append(tuple(atom_indices))
+                        self.molecule_type.append(1)  # Molecule type: CO3
+                        com_positions.append(com)
                         break
                     tries += 1
                     if tries >= 1000:
-                        logging.warning(f"Could not place type 1 particle after 1000 tries. Placing anyway (may overlap).")
-                        logging.warning(f"Energy may jump significantly due to overlap.")
-                        self.positions.append(position)
-                        self.types.append(1)
+                        logging.warning(f"Could not place CO3 after 1000 tries. Placing anyway (may overlap).")
+                        rotation = random_rotation_matrix()
+                        ref_geom = self.molecular_geometries[1].copy()
+                        rotated_geom = ref_geom @ rotation.T
+                        atom_indices = []
+                        for i, local_pos in enumerate(rotated_geom):
+                            atom_pos = (com + local_pos) % self.box_length
+                            atom_idx = len(self.positions)
+                            self.positions.append(atom_pos)
+                            self.types.append(1 if i == 0 else 2)
+                            atom_indices.append(atom_idx)
+                        self.molecules.append(tuple(atom_indices))
+                        self.molecule_type.append(1)
+                        com_positions.append(com)
                         break
-        
+
         self.positions = np.array(self.positions)
         self.types = np.array(self.types)
+        self.molecule_type = np.array(self.molecule_type)
+        self.num_molecules = len(self.molecules)
 
         self.target_clust_idx = self.find_target_cluster()
         self.init_pmf()
         self.energy = 0.0  # Will be calculated in equilibration/production run
 
+    def get_molecule_com(self, molecule_idx):
+        '''Calculate molecular COM from atomic positions (uniform mass weighting)'''
+        atom_indices = self.molecules[molecule_idx]
+        atom_positions = self.positions[list(atom_indices)]
+        com = np.mean(atom_positions, axis=0)
+        return com
+
+    def update_molecule_positions(self, molecule_idx, new_com, rotation_matrix=None):
+        '''Update all atom positions in molecule: translate to new_com and optionally rotate around COM'''
+        atom_indices = self.molecules[molecule_idx]
+        mol_type = self.molecule_type[molecule_idx]
+
+        # Single-atom molecule (e.g., Ca) - just set position
+        if len(atom_indices) == 1:
+            self.positions[atom_indices[0]] = new_com
+
+        # Multi-atom molecule - apply rotation and translation
+        else:
+            ref_geometry = self.molecular_geometries[mol_type].copy()
+
+            # Apply rotation if provided
+            if rotation_matrix is not None:
+                rotated_geometry = ref_geometry @ rotation_matrix.T
+            else:
+                rotated_geometry = ref_geometry
+
+            # Translate to new COM
+            for i, atom_idx in enumerate(atom_indices):
+                self.positions[atom_idx] = new_com + rotated_geometry[i]
+
+    def calc_molecule_dist(self, mol_idx1, mol_idx2):
+        '''Calculate PBC distance between two molecular COMs'''
+        com1 = self.get_molecule_com(mol_idx1)
+        com2 = self.get_molecule_com(mol_idx2)
+        return self.calc_dist(com1, com2)
+
+    def check_ca_proximity(self, molecule_idx, threshold=3.0):
+        '''Check if Ca molecule is within threshold distance of any other Ca
+        Returns: (bool, list of (ca_idx, distance) tuples for close Ca ions)'''
+        if self.molecule_type[molecule_idx] != 0:  # Not a Ca
+            return False, []
+
+        mol_com = self.get_molecule_com(molecule_idx)
+        close_ca = []
+
+        for other_idx in range(self.num_molecules):
+            if other_idx == molecule_idx:
+                continue
+            if self.molecule_type[other_idx] == 0:  # Is Ca
+                other_com = self.get_molecule_com(other_idx)
+                dist = self.calc_dist(mol_com, other_com)
+                if dist < threshold:
+                    close_ca.append((other_idx, dist))
+
+        return len(close_ca) > 0, close_ca
+
     def step(self, step_num=0):
-        '''Execute one Monte Carlo step by randomly selecting and attempting a move'''
-        # Dynamic move selection using probabilities from config
+        '''Execute one MC step: select random molecule and attempt a move based on probabilities'''
         if not self.active_moves:
-            return  # No moves configured
+            return
+
+        # Track step number for logging
+        self.current_step = step_num
 
         energy_before = self.energy
 
-        move_idx = np.random.choice(len(self.active_moves),
-                                   p=self.move_probabilities)
+        move_idx = np.random.choice(len(self.active_moves), p=self.move_probabilities)
         selected_move = self.active_moves[move_idx]
         move_name = self.move_names[move_idx]
 
-        # Handle move-specific parameter requirements
-        particle = np.random.randint(self.config.num_particles)
+        # Select random molecule (not atom)
+        molecule = np.random.randint(self.num_molecules)
 
         if 'nvt' in move_name:
-            # NVT moves need special handling
+            # NVT moves select from target cluster
             self.find_target_cluster()
-            particle = np.random.choice(self.target_clust_idx)
-            Nin, Nin_idx = self.calc_in(particle)
-            selected_move.attempt_move(particle, Nin_idx)
+            molecule = np.random.choice(self.target_clust_idx)
+            Nin, Nin_idx = self.calc_in(molecule)
+            selected_move.attempt_move(molecule, Nin_idx)
 
         elif move_name == 'inout_avbmc':
             # Check if inout move is possible, fallback to outin if not
-            Nin, Nin_idx = self.calc_in(particle)
-            if self.debug_mode:
-                logging.info(f"InOut selected: particle {particle}, Nin = {Nin}")
+            Nin, Nin_idx = self.calc_in(molecule)
             if Nin >= 1:
-                # Particle has neighbors, inout move is possible
-                if self.debug_mode:
-                    logging.info(f"  -> Attempting InOut move")
-                selected_move.attempt_move(particle)
+                selected_move.attempt_move(molecule)
             else:
-                # No neighbors, fallback to outin move
-                if self.debug_mode:
-                    logging.info(f"  -> Falling back to OutIn move (no neighbors)")
-                for move_idx, move_name in enumerate(self.move_names):
-                    if move_name == 'outin_avbmc':
-                        self.active_moves[move_idx].attempt_move(particle)
+                for idx, name in enumerate(self.move_names):
+                    if name == 'outin_avbmc':
+                        self.active_moves[idx].attempt_move(molecule)
                         break
         else:
-            selected_move.attempt_move(particle)
+            selected_move.attempt_move(molecule)
 
-        # Debug logging for large energy changes
-        if self.debug_mode:
-            energy_change = self.energy - energy_before
-            if abs(energy_change) > 10000:  # Flag jumps > 10,000 kcal/mol
-                recalc_energy = self.calc_full_energy()
-                logging.warning(f"LARGE ENERGY JUMP at step {step_num}:")
-                logging.warning(f"  Move: {move_name}, Particle: {particle}")
-                logging.warning(f"  Energy before: {energy_before:.2f}")
-                logging.warning(f"  Energy after (cached): {self.energy:.2f}")
-                logging.warning(f"  Energy after (recalc): {recalc_energy:.2f}")
-                logging.warning(f"  Delta (cached): {energy_change:.2f}")
-                logging.warning(f"  Cache error: {abs(self.energy - recalc_energy):.2f}")
+    def calc_short_range_repulsions(self):
+        '''Repulsive soft-sphere penalty for Ca-Ca, Ca-C, and C-C pairs closer than threshold.
+        Uses U(r) = ε(σ/r)^12 (purely repulsive).
 
-                # Print AVBMC-specific debug info if available
-                if hasattr(selected_move, 'debug_avbmc_energy'):
-                    logging.warning(f"  --- AVBMC Details ---")
-                    if selected_move.debug_wnew is not None:
-                        logging.warning(f"  Rosenbluth wnew: {selected_move.debug_wnew:.6e}")
-                        logging.warning(f"  Rosenbluth wold: {selected_move.debug_wold:.6e}")
-                        logging.warning(f"  wnew/wold ratio: {selected_move.debug_components['rosenbluth_ratio']:.6e}")
-                    logging.warning(f"  AVBMC acceptance prob: {selected_move.debug_avbmc_energy:.6e}")
-                    logging.warning(f"  Components:")
-                    for key, value in selected_move.debug_components.items():
-                        logging.warning(f"    {key}: {value:.6e}")
+        Parameters (hardcoded):
+            ε = 100.0 kcal/mol
+            σ = 3.0 Å
+            threshold = 3.1 Å
+        '''
+        epsilon = 100.0
+        sigma = 3.0
+        threshold = 3.1
 
-    def calc_energy_delta(self, particle_idx, new_pos, old_pos):
-        '''Calculate energy difference between new and old positions, including bias energy if applicable'''
-        if self.bias is None:
-            old_energy = self.energy
-            self.positions[particle_idx] = new_pos
-            new_energy = self.calc_full_energy()
-            delta_energy = new_energy - old_energy
-            delta_bias_energy = 0.0
-        # If bias is active must calculate change in cluster size
-        else:
-            old_cluster = len(self.find_target_cluster())
-            old_energy = self.energy
-            self.positions[particle_idx] = new_pos
-            new_cluster = len(self.find_target_cluster())
-            new_energy = self.calc_full_energy()
-            delta_energy = new_energy - old_energy
-            delta_bias_energy = self.bias.denergy(new_cluster, old_cluster)
+        _type_names = {0: 'Ca', 1: 'C'}
+        total_energy = 0.0
 
-        self.positions[particle_idx] = old_pos  # Reset position after calculation
-        return delta_energy, delta_bias_energy
-    
+        for i in range(self.num_molecules):
+            type_i = self.molecule_type[i]
+            if type_i not in (0, 1):
+                continue
+            com_i = self.get_molecule_com(i)
+            for j in range(i + 1, self.num_molecules):
+                type_j = self.molecule_type[j]
+                if type_j not in (0, 1):
+                    continue
+                com_j = self.get_molecule_com(j)
+                r = self.calc_dist(com_i, com_j)
+                if r < threshold:
+                    sr = sigma / r
+                    repulsion = epsilon * sr ** 12
+                    total_energy += repulsion
+                    if self.ca_logger:
+                        ni, nj = _type_names[type_i], _type_names[type_j]
+                        self.ca_logger.warning(f"[DEBUG] {ni}-{nj} pair: {i}-{j} at r={r:.3f} Å, Repulsion={repulsion:.2f} kcal/mol")
+
+        return total_energy
+
     def calc_full_energy(self):
-        '''Calculate total energy of the system using physics prior and MLP'''
-        return self.pmf.energies(self.positions)
+        '''Calculate total system energy using active energy calculator'''
+        # Base energy from LAMMPS or debug potential
+        if hasattr(self.pmf, 'energy'):
+            # Debug potential
+            base_energy = self.pmf.energy(self.positions, self.types, self.box_length)
+        else:
+            # LAMMPS
+            base_energy = self.pmf.energies(self.positions)
+
+        return base_energy + self.calc_short_range_repulsions()
 
     def find_target_cluster(self, target_idx=0):
-        '''Find all particles connected to target particle within cluster cutoff distance using breadth-first search'''        
-        # Start with the target particle
-        # tree = cKDTree(self.positions, boxsize=self.box_length+0.001)
+        '''Find all molecules connected to target molecule within cluster cutoff using BFS on molecular COMs'''
         visited = set()
         queue = [target_idx]
         cluster = []
-        
+
         while queue:
             current = queue.pop(0)
             if current not in visited:
                 visited.add(current)
                 cluster.append(current)
-                # neighbors = tree.query_ball_point(self.positions[current], self.clust_cutoff)
-                # for neighbor in neighbors:
-                    # if neighbor not in visited:
-                        # queue.append(neighbor)
-                neighbors = find_neighbors_numba(self.positions, self.positions[current], self.clust_cutoff, self.box_length)
-                queue.extend([n for n in neighbors if n not in visited])
-        
-        # Cluster around target particle found
-        # self.target_clust_idx = cluster
+
+                # Find neighboring molecules based on COM distances
+                current_com = self.get_molecule_com(current)
+                for mol_idx in range(self.num_molecules):
+                    if mol_idx not in visited:
+                        neighbor_com = self.get_molecule_com(mol_idx)
+                        dist = self.calc_dist(current_com, neighbor_com)
+                        if dist < self.clust_cutoff:
+                            queue.append(mol_idx)
+
         return cluster
     
     def find_clusters(self):
-        '''Find all clusters in the system using Stillinger cluster analysis with periodic boundary conditions'''
-        tree = cKDTree(self.positions, boxsize=self.box_length + 1e-6)  # slight offset avoids precision issues
-        neighbor_lists = tree.query_ball_point(self.positions, self.clust_cutoff)
-
-        visited = np.zeros(self.num_particles, dtype=bool)
+        '''Find all molecular clusters using Stillinger analysis on molecular COM distances with PBC'''
+        visited = np.zeros(self.num_molecules, dtype=bool)
         clusters = []
 
-        for i in range(self.num_particles):
+        # Build molecular COM positions for efficient neighbor search
+        mol_coms = np.array([self.get_molecule_com(i) for i in range(self.num_molecules)])
+        tree = cKDTree(mol_coms, boxsize=self.box_length + 1e-6)
+        neighbor_lists = tree.query_ball_point(mol_coms, self.clust_cutoff)
+
+        for i in range(self.num_molecules):
             if not visited[i]:
                 cluster = []
                 queue = deque([i])
@@ -278,30 +396,36 @@ class System:
         self.target_clust_idx = clusters[0]
         return self.cluster_sizes, self.target_clust_idx
         
-    def check_in(self, particle_idx):
-        '''Check if particle is within cluster cutoff distance of any particle in target cluster'''
+    def check_in(self, molecule_idx):
+        '''Check if molecule COM is within cluster cutoff of any molecule in target cluster'''
+        mol_com = self.get_molecule_com(molecule_idx)
         for clust_idx in self.target_clust_idx:
-            if clust_idx != particle_idx:
-                distance = self.calc_dist(self.positions[particle_idx], self.positions[clust_idx])
+            if clust_idx != molecule_idx:
+                clust_com = self.get_molecule_com(clust_idx)
+                distance = self.calc_dist(mol_com, clust_com)
                 if distance < self.clust_cutoff:
                     return True
         return False
-        
-    def calc_in(self, particle_idx):
-        '''Calculate neighbors within cluster cutoff distance using PBC distances.'''
-        # Calculate distances from particle to all others with PBC
-        pos = self.positions[particle_idx]
-        pos_diff = self.positions - pos
+
+    def calc_in(self, molecule_idx):
+        '''Calculate neighboring molecules within cluster cutoff distance using COM-COM PBC distances'''
+        mol_com = self.get_molecule_com(molecule_idx)
+
+        # Calculate COM positions for all molecules
+        all_coms = np.array([self.get_molecule_com(i) for i in range(self.num_molecules)])
+
+        # Calculate distances with PBC
+        pos_diff = all_coms - mol_com
         pos_diff = pos_diff - self.box_length * np.round(pos_diff / self.box_length)
         distances = np.linalg.norm(pos_diff, axis=1)
-        
-        # Find neighbors within cutoff (excluding the particle itself)
+
+        # Find neighbors within cutoff (excluding the molecule itself)
         within_cutoff = (distances < self.clust_cutoff) & (distances > 0.0)
         neighbors = np.where(within_cutoff)[0].tolist()
-        
+
         Nin = len(neighbors)
         Nin_idx = neighbors
-        
+
         return Nin, Nin_idx
     
     def calc_dist(self, pos1, pos2):

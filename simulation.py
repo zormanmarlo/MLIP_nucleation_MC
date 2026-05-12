@@ -4,6 +4,8 @@ import argparse
 
 import cProfile
 import pstats
+#import torch
+#from torch.profiler import profile, record_function, ProfilerActivity
 
 import numpy as np
 import pickle as pkl
@@ -28,8 +30,8 @@ class Simulation:
         self.system = System(self.config, ID)
         self.system.init_positions(input_path=self.config.input_path, multi=multi_inputs)
         self.target_sizes = []
-        
-        
+
+
         # Pre-build file paths for cleaner code
         self.output_dir = f'{self.path}/{self.jobname}'
         self.stats_file = f'{self.output_dir}/stats-{self.ID}.log'
@@ -37,13 +39,36 @@ class Simulation:
         self.traj_file = f'{self.output_dir}/traj-{self.ID}.xyz'
         self.clusters_file = f'{self.output_dir}/clusters-{self.ID}.out'
         self.target_cluster_file = f'{self.output_dir}/target_cluster-{self.ID}.out'
+        self.ca_proximity_file = f'{self.output_dir}/ca_proximity-{self.ID}.log'
         if self.system.bias is not None and self.system.bias.type == 'harmonic':
             self.colvar_file = f'{self.output_dir}/colvar_{self.system.bias.center}.out'
+
+        # Set up Ca-Ca proximity logger
+        self.setup_ca_proximity_logger()
         
         with open(self.stats_file, 'a') as f:
             move_headers = ' '.join(f'{name}_acceptance' for name in self.system.move_names)
             f.write(f'# step {move_headers}\n')
-        
+
+    def setup_ca_proximity_logger(self):
+        '''Set up dedicated logger for Ca-Ca proximity alerts'''
+        ca_logger = logging.getLogger(f'ca_proximity_{self.ID}')
+        ca_logger.setLevel(logging.WARNING)
+        ca_logger.propagate = False  # Don't propagate to root logger
+
+        # Remove any existing handlers
+        ca_logger.handlers = []
+
+        # Create file handler for Ca-Ca proximity log
+        file_handler = logging.FileHandler(self.ca_proximity_file, mode='w')
+        file_handler.setLevel(logging.WARNING)
+        formatter = logging.Formatter('%(message)s')
+        file_handler.setFormatter(formatter)
+        ca_logger.addHandler(file_handler)
+
+        # Store logger in system for moves to use
+        self.system.ca_logger = ca_logger
+
     def clean_dir(self):
         '''Remove all existing output files to ensure clean simulation start'''
         files_to_clean = [
@@ -51,7 +76,8 @@ class Simulation:
             self.traj_file,
             self.clusters_file,
             self.target_cluster_file,
-            self.stats_file
+            self.stats_file,
+            self.ca_proximity_file
         ]
         if hasattr(self, 'colvar_file'):
             files_to_clean.append(self.colvar_file)
@@ -74,12 +100,15 @@ class Simulation:
         with open(self.energy_file, 'a') as f:
             f.write(f'{step} {self.system.energy} {self.system.bias_energy}\n')
         
-        # Write trajectory output
+        # Write trajectory output (all atoms: Ca, C, O)
         with open(self.traj_file, 'a') as f:
+            L = self.system.box_length
             f.write(f'  {self.config.num_particles}\n')
-            f.write(f'  Step: {step}\n')
+            f.write(f'  Lattice="{L} 0 0 0 {L} 0 0 0 {L}" Step: {step}\n')
             for i, particle in enumerate(self.system.positions):
-                atom_type = 'H' if self.system.types[i] == 0 else 'O'
+                # Atom type mapping: 0=Ca, 1=C, 2=O
+                atom_type_map = {0: 'Ca', 1: 'C', 2: 'O'}
+                atom_type = atom_type_map.get(self.system.types[i], 'X')
                 f.write(f'{atom_type} {particle[0]:>6.2f} {particle[1]:>6.2f} {particle[2]:>6.2f}\n')
         
         # Write cluster size distribution
@@ -185,11 +214,23 @@ if __name__ == "__main__":
         if args.np == 1:
             pr = cProfile.Profile()
             pr.enable()
+            #scalene_profiler.start()
+
+            #with profile(
+            #    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            #    record_shapes=False,
+            #    with_stack=False
+            #) as prof:
+            #    with record_function("equilibration"):
             equilibration_run(simulations[0])
             production_run(simulations[0])
-            pr.disable()
+            #print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+            #prof.export_chrome_trace("trace.json")
+           # scalene_profiler.stop()
+
+            #pr.disable()
             ps = pstats.Stats(pr).sort_stats('cumulative')
-            ps.print_stats(10)
+            ps.print_stats(100)
         else:
             with mp.Pool(processes=args.np) as pool:
                 logger.info(f"Running {args.np} markov chains")
@@ -200,7 +241,7 @@ if __name__ == "__main__":
 
     # Run until potentials are converged
     else:
-        # Run unbiased simulation
+        # Run unbiased equilibration first production iteration
         with mp.Pool(processes=args.np) as pool:
             pool.map(equilibration_run, simulations)
             pool.map(production_run, simulations)
@@ -234,7 +275,7 @@ if __name__ == "__main__":
             cluster_counts = np.concatenate([sim.target_sizes for sim in simulations])
             dist = np.histogram(cluster_counts, bins=np.arange(1, simulations[0].config.parameters["max_target"]+2))[0]
 
-            with open(f"{args.path}/{args.jobname}/histograms.out", "a") as file:
+            with open(f"{args.jobname}/histograms.out", "a") as file:
                 file.write(f"{dist}\n")
 
             # Update bias in main process
@@ -248,7 +289,7 @@ if __name__ == "__main__":
             potential = simulations[0].system.bias.bias
             np.save(bias_file, potential)
 
-            with open(f"{args.path}/{args.jobname}/potentials.out", "a") as file:
+            with open(f"{args.jobname}/potentials.out", "a") as file:
                 file.write(f"{potential}\n")
 
             logger.info(f"Iteration {current_it}: Updated bias saved to {bias_file}")
@@ -258,14 +299,14 @@ if __name__ == "__main__":
                 potential = simulations[0].system.bias.bias
 
                 # Save final outputs
-                with open(f"{args.path}/{args.jobname}/histograms.out", "a") as file:
+                with open(f"{args.jobname}/histograms.out", "a") as file:
                     file.write("FINAL HISTOGRAM:\n")
                     file.write(f"{dist}\n")
-                with open(f"{args.path}/{args.jobname}/potentials.out", "a") as file:
+                with open(f"{args.jobname}/potentials.out", "a") as file:
                     file.write("FINAL POTENTIAL:\n")
                     file.write(f"{potential}\n")
 
                 # Save final bias potential
-                np.save(f"{args.path}/{args.jobname}/final_bias_potential.npy", potential)
+                np.save(f"{args.jobname}/final_bias_potential.npy", potential)
                 cont = False
 

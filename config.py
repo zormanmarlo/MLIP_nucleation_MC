@@ -1,10 +1,10 @@
 import numpy as np
-import re
-from utils import is_float, Bias, logger
+import yaml
+from utils import Bias, logger
 
 class Config:
     def __init__(self, config_file):
-        '''Initialize configuration by parsing file and setting up parameters, bias, and move types'''
+        '''Initialize configuration by parsing YAML file and setting up parameters, bias, and move types'''
         self.parameters = self._parse_config_file(config_file)
         self._missing_parameters()
         self._set_bias()
@@ -15,41 +15,28 @@ class Config:
         logger.info(f"Box length: {self.parameters['box_length']} Å")
         logger.info(f"Number of particles: {self.parameters['num_particles']}")
         logger.info(f"Bias: {self.parameters.get('bias_type', 'none')}")
-
+        
         self.default_params = [
             'box_length', 'num_particles', 'equil_steps', 'prod_steps', 'output_interval',
             'internal_interval', 'seed', 'bias_type', 'avbmc_rate', 'nvt_rate',
-            'translation_rate', 'swap_rate', 'max_displacement', 'upper_cutoff',
-            'lower_cutoff', 'clust_cutoff', 'ff_path', 'input_path', 'kT', 'ratio',
-            'input_file', 'lower_energy_cutoff', 'energy_cutoff', 'concentration', 'debug_mode'
+            'translation_rate', 'swap_rate', 'rotation_rate', 'max_displacement', 'upper_cutoff',
+            'lower_cutoff', 'clust_cutoff', 'model_path', 'input_path', 'kT', 'ratio',
+            'input_file', 'lower_energy_cutoff', 'energy_cutoff', 'concentration',
+            'min_cluster_size',
         ]
+
+        # Optional parameters (won't raise error if missing)
+        self.optional_params = ['body_file', 'max_rotation_angle']
         for param in self.default_params:
             if param not in self.parameters:
                 logger.error(f"Parameter '{param}' not set in configuration file.")
                 raise ValueError(f"Missing required parameter: {param}")
     
     def _parse_config_file(self, config_file):
-        '''Parse configuration file and convert values to appropriate types'''
+        '''Parse YAML configuration file'''
         with open(config_file, 'r') as f:
-            parameters = {}
-            for line in f:
-                if "#" not in line[0]:
-                    match = re.match(r'^([^#=]+?)\s*=\s*([^\s#]+)', line)
-                    if not match:
-                        continue
-                    key, value = match.group(1).strip(), match.group(2).strip()
-                    if value.isdigit():
-                        parameters[key] = int(value)
-                    elif is_float(value):
-                        parameters[key] = float(value)
-                    elif value.lower() in ['true', 'false']:
-                        parameters[key] = value.lower() == 'true'
-                    else:
-                        if value.lower() == "none":
-                            parameters[key] = None
-                        else:
-                            parameters[key] = value
-        return parameters
+            parameters = yaml.safe_load(f)
+        return parameters if parameters else {}
 
     def _set_bias(self):
         '''Initialize bias potential based on bias_type parameter'''
@@ -63,13 +50,17 @@ class Config:
             if 'bias_k' not in self.parameters:
                 logger.warning("Parameter 'bias_k' not set for harmonic bias. Defaulting to 1.0.")
                 self.parameters['bias_k'] = 1.0
-            self.bias = Bias(center=self.parameters['bias_center'], type='harmonic', force_constant=self.parameters['bias_k'])
+            self.bias = Bias(center=self.parameters['bias_center'], type='harmonic', force_constant=self.parameters['bias_k'], min_size=self.parameters['min_cluster_size'])
         elif self.parameters['bias_type'] == 'linear':
-            if 'bias_file' not in self.parameters:
-                logger.warning("Parameter 'bias_file' not set for linear bias. Setting bias to zero")
-                self.bias = Bias(type='linear', max_size=self.parameters.get('max_target', 200))
+            if 'bias_path' not in self.parameters:
+                logger.warning("Parameter 'bias_path' not set for linear bias. Setting bias to zero")
+                self.bias = Bias(type='linear', max_size=self.parameters.get('max_target', 200), min_size=self.parameters['min_cluster_size'])
             else:
-                self.bias = Bias(path=self.parameters['bias_file'], type='linear', max_size=self.parameters.get('max_target', 200))
+                # Check to make sure max target and length from bias file are consistent
+                self.bias = Bias(path=self.parameters['bias_path'], type='linear', max_size=self.parameters.get('max_target', 200), min_size=self.parameters['min_cluster_size'])
+                if self.bias.num_bins != self.parameters.get('max_target', 200):
+                    logger.warning(f"Bias file has {self.bias.num_bins} bins but max_target is set to {self.parameters.get('max_target', 200)}. This may cause issues with bias application.")
+
         else:
             self.bias = None
     
@@ -95,9 +86,9 @@ class Config:
         if 'energy_cutoff' not in self.parameters:
             self.parameters['energy_cutoff'] = 20
 
-        # if no debug_mode is provided, default to False
-        if 'debug_mode' not in self.parameters:
-            self.parameters['debug_mode'] = False
+        # if no min_cluster_size is provided, default to 0 (no minimum constraint)
+        if 'min_cluster_size' not in self.parameters:
+            self.parameters['min_cluster_size'] = 0
 
         # Parse the ratio
         self._parse_ratio()
@@ -180,33 +171,36 @@ class Config:
     
     def _setup_move_types(self):
         '''Create list of active move types and their rates'''
-        # Import moves here to avoid circular imports and keep system.py clean
-        from moves import TranslationMove, SwapMove, InOutAVBMCMove, OutInAVBMCMove, NVTInOutMove, NVTOutInMove
-        
+        from moves import TranslationMove, SwapMove, RotationMove, InOutAVBMCMove, OutInAVBMCMove, NVTInOutMove, NVTOutInMove
+
         move_classes = {
             'translation': TranslationMove,
             'swap': SwapMove,
+            'rotation': RotationMove,
             'inout_avbmc': InOutAVBMCMove,
             'outin_avbmc': OutInAVBMCMove,
             'nvt_inout': NVTInOutMove,
             'nvt_outin': NVTOutInMove
         }
-        
-        self.active_moves = []  # List of (move_name, rate, move_class) tuples
-        
+
+        self.active_moves = []
+
         # Add moves that have non-zero rates
         if getattr(self, 'translation_rate', 0) > 0:
             self.active_moves.append(('translation', self.translation_rate, move_classes['translation']))
-        
+
         if getattr(self, 'swap_rate', 0) > 0:
             self.active_moves.append(('swap', self.swap_rate, move_classes['swap']))
-        
+
+        if getattr(self, 'rotation_rate', 0) > 0:
+            self.active_moves.append(('rotation', self.rotation_rate, move_classes['rotation']))
+
         # AVBMC moves (split rate between in->out and out->in)
         if getattr(self, 'avbmc_rate', 0) > 0:
             avbmc_sub_rate = self.avbmc_rate / 2
             self.active_moves.append(('inout_avbmc', avbmc_sub_rate, move_classes['inout_avbmc']))
             self.active_moves.append(('outin_avbmc', avbmc_sub_rate, move_classes['outin_avbmc']))
-        
+
         # NVT moves (split rate between in->out and out->in)
         if getattr(self, 'nvt_rate', 0) > 0:
             nvt_sub_rate = self.nvt_rate / 2
