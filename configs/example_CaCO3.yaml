@@ -1,0 +1,54 @@
+# CaCO3 Monte Carlo Simulation Configuration
+
+# System parameters
+concentration: 0.1  # M
+num_particles: 200    # Total atoms: 120 Ca + 120 CO3 (4 atoms each) = 600
+
+# Simulation settings
+equil_steps: 100
+prod_steps: 400000
+output_interval: 100
+internal_interval: 1000
+seed: 11
+
+# Bias settings
+bias_type: null  # Options: null, 'harmonic', 'umbrella'
+
+# Move rates (relative probabilities)
+avbmc_rate: 0.2
+nvt_rate: 0.0
+translation_rate: 0.4
+rotation_rate: 0.4
+swap_rate: 0.0
+
+# Move parameters
+max_displacement: 30.0  # Angstroms
+max_rotation_angle: 3.14159  # Radians (pi = full rotation)
+
+# Cluster definition
+upper_cutoff: 3.5
+lower_cutoff: 2.5
+clust_cutoff: 3.5
+
+# Energy parameters
+kT: 0.6  # kcal/mol
+lower_energy_cutoff: 2.5
+energy_cutoff: 3.5
+
+# Ratio settings
+ratio: 2  # Total ratio for stoichiometry
+ratio_type1: 1  # Ca
+ratio_type2: 1  # CO3
+
+# Input/output
+model_path: /gscratch/cheme/mzorman/06_MLP/models/CaCO3_0417.nequip.pth
+table_path: /configs/CaCO3_prior.table
+input_path: null
+input_file: null
+debug_mode: false
+
+# Molecular geometry (optional)
+body_file: null  # Path to CO3.body file, or null for default geometry
+
+# Clustering
+min_cluster_size: 1

@@ -1,0 +1,16 @@
+# CO3 reference geometry in body frame (Angstroms)
+# Carbon at origin, oxygen atoms in planar trigonal arrangement
+# C-O bond length ~1.29 Angstroms, 120 degree angles
+
+# Format: x y z
+# C atom (center)
+0.0 0.0 0.0
+
+# O1 atom
+1.29 0.0 0.0
+
+# O2 atom (120 degrees from O1)
+-0.645 1.117 0.0
+
+# O3 atom (120 degrees from O1, opposite side)
+-0.645 -1.117 0.0

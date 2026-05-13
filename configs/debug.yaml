@@ -1,0 +1,56 @@
+# Debug configuration using soft-sphere potential
+# Small, fast system for testing molecular MC mechanics
+
+# Use debug potential instead of LAMMPS/NequIP
+debug_potential: true
+
+# Small system for fast testing (20 Ca + 20 CO3 = 100 atoms)
+concentration: 0.1
+num_particles: 100
+
+# Short run
+equil_steps: 10
+prod_steps: 10000
+output_interval: 1
+internal_interval: 1
+seed: 42
+
+# No bias
+bias_type: null
+
+# Test all move types
+translation_rate: 0.25
+rotation_rate: 0.25
+swap_rate: 0.1
+avbmc_rate: 0.2
+nvt_rate: 0.2
+
+# Move parameters
+max_displacement: 3.0
+
+# Cutoffs
+upper_cutoff: 10.0
+lower_cutoff: 2.0
+clust_cutoff: 3.5
+
+# Temperature
+kT: 0.6
+
+# Energy parameters (required but not used in soft-sphere)
+lower_energy_cutoff: 2.0
+energy_cutoff: 3.5
+
+# Stoichiometry (ratio format: "type1:type2")
+ratio: "1:1"
+
+# No ML model needed in debug mode
+model_path: null
+input_path: null
+input_file: null
+
+# Debug settings
+debug_mode: false
+min_cluster_size: 1
+
+# Optional molecular geometry (null = use default)
+body_file: null

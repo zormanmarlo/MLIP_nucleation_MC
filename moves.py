@@ -31,51 +31,155 @@ class TranslationMove(Move):
         '''Initialize translation move with maximum displacement parameter'''
         super().__init__(system)
         self.max_displacement = system.config.max_displacement
-    
-    def attempt_move(self, particle_idx):
-        '''Attempt random translation move within spherical displacement constraint'''
+
+    def attempt_move(self, molecule_idx):
+        '''Translate entire molecule (all atoms) by random displacement within spherical constraint'''
         self.attempts += 1
 
+        # Generate random displacement within sphere
         displacement = np.round(((np.random.rand(3) - 0.5) * self.max_displacement * 2), 3)
         while (np.sum(displacement**2) > self.max_displacement**2):
             displacement = np.round(((np.random.rand(3) - 0.5) * self.max_displacement * 2), 3)
 
-        old_pos = self.system.positions[particle_idx].copy()
-        new_pos = (old_pos + displacement) % (self.system.box_length)
+        # Store old positions for all atoms in molecule
+        atom_indices = self.system.molecules[molecule_idx]
+        old_positions = [self.system.positions[idx].copy() for idx in atom_indices]
+        old_com = self.system.get_molecule_com(molecule_idx)
 
-        delta_energy, bias_energy = self.system.calc_energy_delta(particle_idx, new_pos, old_pos)
-        acc_prob = min(1, np.exp(np.clip((-(delta_energy+bias_energy)/self.system.kT), -500, 500)))
+        # Calculate new COM position with PBC
+        new_com = (old_com + displacement) % self.system.box_length
+
+        # Move all atoms by displacement (preserving molecular geometry)
+        for idx in atom_indices:
+            self.system.positions[idx] = (self.system.positions[idx] + displacement) % self.system.box_length
+
+        # Calculate energy change
+        if self.system.bias is None:
+            old_energy = self.system.energy
+            new_energy = self.system.calc_full_energy()
+            delta_energy = new_energy - old_energy
+            bias_energy = 0.0
+        else:
+            old_cluster_size = len(self.system.find_target_cluster())
+            old_energy = self.system.energy
+            new_cluster_size = len(self.system.find_target_cluster())
+            new_energy = self.system.calc_full_energy()
+            delta_energy = new_energy - old_energy
+            bias_energy = self.system.bias.denergy(new_cluster_size, old_cluster_size)
+
+        # Accept/reject with Metropolis criterion
+        acc_prob = min(1, np.exp(np.clip((-(delta_energy + bias_energy) / self.system.kT), -500, 500)))
         if np.random.rand() >= acc_prob:
-            # Reject move - position is already back at old_pos from calc_energy_delta
+            # Reject - restore old positions
+            for i, idx in enumerate(atom_indices):
+                self.system.positions[idx] = old_positions[i]
             self.rejections += 1
         else:
-            # Accept move - update position and system energy
-            self.system.positions[particle_idx] = new_pos
+            # Accept - update system energy
             self.system.energy += delta_energy
             self.system.bias_energy += bias_energy
 
 
 class SwapMove(Move):
     def __init__(self, system):
-        '''Initialize swap move for random particle repositioning'''
+        '''Initialize swap move for random molecular repositioning'''
         super().__init__(system)
-    
-    def attempt_move(self, particle_idx):
-        '''Attempt to swap particle to random position in simulation box'''
+
+    def attempt_move(self, molecule_idx):
+        '''Relocate entire molecule to random position with random orientation'''
+        from utils import random_rotation_matrix
         self.attempts += 1
 
-        old_pos = self.system.positions[particle_idx].copy()
-        new_pos = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
+        # Store old positions
+        atom_indices = self.system.molecules[molecule_idx]
+        old_positions = [self.system.positions[idx].copy() for idx in atom_indices]
 
-        delta_energy, bias_energy = self.system.calc_energy_delta(particle_idx, new_pos, old_pos)
-        
-        acc_prob = min(1, np.exp(np.clip((-(delta_energy+bias_energy)/self.system.kT), -500, 500)))
+        # Generate random COM position
+        new_com = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
+
+        # For molecular species, also randomize orientation
+        mol_type = self.system.molecule_type[molecule_idx]
+        if len(atom_indices) > 1:  # Multi-atom molecule
+            rotation = random_rotation_matrix()
+            self.system.update_molecule_positions(molecule_idx, new_com, rotation)
+        else:  # Single-atom molecule
+            self.system.update_molecule_positions(molecule_idx, new_com)
+
+        # Calculate energy change
+        if self.system.bias is None:
+            old_energy = self.system.energy
+            new_energy = self.system.calc_full_energy()
+            delta_energy = new_energy - old_energy
+            bias_energy = 0.0
+        else:
+            old_cluster_size = len(self.system.find_target_cluster())
+            old_energy = self.system.energy
+            new_cluster_size = len(self.system.find_target_cluster())
+            new_energy = self.system.calc_full_energy()
+            delta_energy = new_energy - old_energy
+            bias_energy = self.system.bias.denergy(new_cluster_size, old_cluster_size)
+
+        # Accept/reject
+        acc_prob = min(1, np.exp(np.clip((-(delta_energy + bias_energy) / self.system.kT), -500, 500)))
         if np.random.rand() >= acc_prob:
-            # Reject move - position is already back at old_pos from calc_energy_delta
+            # Reject - restore old positions
+            for i, idx in enumerate(atom_indices):
+                self.system.positions[idx] = old_positions[i]
             self.rejections += 1
         else:
-            # Accept move - update position and system energy
-            self.system.positions[particle_idx] = new_pos
+            # Accept
+            self.system.energy += delta_energy
+            self.system.bias_energy += bias_energy
+
+
+class RotationMove(Move):
+    def __init__(self, system):
+        '''Initialize rotation move using Euler angles'''
+        super().__init__(system)
+
+    def attempt_move(self, molecule_idx):
+        '''Rotate rigid molecule around its COM using random Euler angles'''
+        from utils import random_rotation_matrix
+        self.attempts += 1
+
+        # Skip single-atom molecules (e.g., Ca)
+        atom_indices = self.system.molecules[molecule_idx]
+        if len(atom_indices) == 1:
+            return
+
+        # Store old positions
+        old_positions = [self.system.positions[idx].copy() for idx in atom_indices]
+        current_com = self.system.get_molecule_com(molecule_idx)
+
+        # Generate random rotation using Euler angles (ZYZ convention)
+        rotation = random_rotation_matrix()
+
+        # Apply rotation around current COM
+        self.system.update_molecule_positions(molecule_idx, current_com, rotation)
+
+        # Calculate energy change
+        if self.system.bias is None:
+            old_energy = self.system.energy
+            new_energy = self.system.calc_full_energy()
+            delta_energy = new_energy - old_energy
+            bias_energy = 0.0
+        else:
+            old_cluster_size = len(self.system.find_target_cluster())
+            old_energy = self.system.energy
+            new_cluster_size = len(self.system.find_target_cluster())
+            new_energy = self.system.calc_full_energy()
+            delta_energy = new_energy - old_energy
+            bias_energy = self.system.bias.denergy(new_cluster_size, old_cluster_size)
+
+        # Accept/reject
+        acc_prob = min(1, np.exp(np.clip((-(delta_energy + bias_energy) / self.system.kT), -500, 500)))
+        if np.random.rand() >= acc_prob:
+            # Reject - restore old positions
+            for i, idx in enumerate(atom_indices):
+                self.system.positions[idx] = old_positions[i]
+            self.rejections += 1
+        else:
+            # Accept
             self.system.energy += delta_energy
             self.system.bias_energy += bias_energy
 
@@ -88,7 +192,8 @@ class InOutAVBMCMove(Move):
         self.Vout = self.system.box_length**3
 
     def attempt_move(self, anchor_idx):
-        '''Attempt AVBMC move to remove particle from cluster to bulk solution'''
+        '''Move molecule from cluster to bulk with random position and orientation'''
+        from utils import random_rotation_matrix
         self.attempts += 1
 
         Nin, Nin_idx = self.system.calc_in(anchor_idx)
@@ -96,132 +201,158 @@ class InOutAVBMCMove(Move):
             self.rejections += 1
             return
         target_idx = np.random.choice(Nin_idx)
-        old_pos = self.system.positions[target_idx].copy()
 
-        new_pos = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
-        while self.system.calc_dist(old_pos, new_pos) <= self.system.config.upper_cutoff:
-            new_pos = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
+        # Store old positions for all atoms in molecule
+        atom_indices = self.system.molecules[target_idx]
+        old_positions = [self.system.positions[idx].copy() for idx in atom_indices]
+        old_com = self.system.get_molecule_com(target_idx)
 
-        delta_energy, bias_energy = self.system.calc_energy_delta(target_idx, new_pos, old_pos)
-        avbmc_energy = np.exp(np.clip(-(delta_energy+bias_energy)/self.system.kT,
-                                -500, 500)) * self.Vout/self.Vin * (Nin)/(self.system.num_particles-Nin+1)
-        # avbmc_energy = np.exp(np.clip((-(delta_energy+bias_energy)/self.system.kT)*self.Vout/self.Vin*(Nin)/(self.system.num_particles-Nin+1), -500, 500))
+        # Generate random position in bulk (far from old position)
+        new_com = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
+        while self.system.calc_dist(old_com, new_com) <= self.system.config.upper_cutoff:
+            new_com = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
+
+        # For molecules, also randomize orientation
+        mol_type = self.system.molecule_type[target_idx]
+        if len(atom_indices) > 1:
+            rotation = random_rotation_matrix()
+            self.system.update_molecule_positions(target_idx, new_com, rotation)
+        else:
+            self.system.update_molecule_positions(target_idx, new_com)
+
+        # Calculate energy change
+        if self.system.bias is None:
+            old_energy = self.system.energy
+            new_energy = self.system.calc_full_energy()
+            delta_energy = new_energy - old_energy
+            bias_energy = 0.0
+        else:
+            old_cluster_size = len(self.system.find_target_cluster())
+            old_energy = self.system.energy
+            new_cluster_size = len(self.system.find_target_cluster())
+            new_energy = self.system.calc_full_energy()
+            delta_energy = new_energy - old_energy
+            bias_energy = self.system.bias.denergy(new_cluster_size, old_cluster_size)
+
+        avbmc_energy = np.exp(np.clip(-(delta_energy+bias_energy)/self.system.kT, -500, 500)) * self.Vout/self.Vin * (Nin)/(self.system.num_molecules-Nin+1)
         acc_prob = min(1, avbmc_energy)
 
-        # Generate random value for acceptance check
-        rand_val = np.random.rand()
-
-        # Debug: Print detailed acceptance criterion for every InOut attempt
-        if self.system.debug_mode:
-            accepted = rand_val < acc_prob
-            logger.info(f"InOut Move Attempt:")
-            logger.info(f"  delta_energy: {delta_energy:.2f} kcal/mol")
-            logger.info(f"  bias_energy: {bias_energy:.2f} kcal/mol")
-            logger.info(f"  Boltzmann factor: {np.exp(np.clip(-(delta_energy+bias_energy)/self.system.kT, -500, 500)):.6e}")
-            logger.info(f"  Volume ratio (Vout/Vin): {self.Vout/self.Vin:.2f}")
-            logger.info(f"  Geometric factor (Nin/(Nout+1)): {Nin}/{self.system.num_particles-Nin+1} = {Nin/(self.system.num_particles-Nin+1):.6f}")
-            logger.info(f"  AVBMC acceptance prob: {avbmc_energy:.6e}")
-            logger.info(f"  Random value: {rand_val:.6f}")
-            logger.info(f"  Accepted: {accepted}")
-
-            # Store debug info for system-level logging (keep for energy jump detection)
-            self.debug_wnew = None  # InOut doesn't use Rosenbluth
-            self.debug_wold = None
-            self.debug_avbmc_energy = avbmc_energy
-            self.debug_components = {
-                'boltzmann_factor': np.exp(np.clip(-(delta_energy+bias_energy)/self.system.kT, -500, 500)),
-                'volume_ratio': self.Vout/self.Vin,
-                'geometric_factor': Nin/(self.system.num_particles-Nin+1)
-            }
-
-        if rand_val >= acc_prob:
-            # Reject move - position is already back at old_pos from calc_energy_delta
+        # Accept/reject
+        if np.random.rand() >= acc_prob:
+            # Reject - restore old positions
+            for i, idx in enumerate(atom_indices):
+                self.system.positions[idx] = old_positions[i]
             self.rejections += 1
         else:
-            # Accept move - update position and system energy
-            self.system.positions[target_idx] = new_pos
+            # Accept
             self.system.energy += delta_energy
             self.system.bias_energy += bias_energy
 
 
 class OutInAVBMCMove(Move):
     def __init__(self, system):
-        '''Initialize AVBMC out-in move with volume calculations and Rosenbluth sampling'''
+        '''Initialize AVBMC out-in move with Rosenbluth sampling over position and orientation'''
         super().__init__(system)
         self.Vin = 4.0/3.0 * np.pi * (self.system.clust_cutoff**3) - 4.0/3.0 * np.pi * (self.system.config.lower_cutoff**3)
         self.Vout = self.system.box_length**3
-    
+
     def attempt_move(self, anchor_idx):
-        '''Attempt AVBMC move to insert bulk particle into cluster using Rosenbluth weighting'''
+        '''Move molecule from bulk to cluster with Rosenbluth sampling over position+orientation'''
+        from utils import random_rotation_matrix
         self.attempts += 1
 
         Nin, Nin_idx = self.system.calc_in(anchor_idx)
-        target_idx = np.random.randint(self.system.num_particles)
+        target_idx = np.random.randint(self.system.num_molecules)
         while (target_idx in Nin_idx) or (target_idx == anchor_idx) or (target_idx == 0):
-            target_idx = np.random.randint(self.system.num_particles)
+            target_idx = np.random.randint(self.system.num_molecules)
 
         old_energy = self.system.energy
-        old_pos = self.system.positions[target_idx].copy()
+        atom_indices = self.system.molecules[target_idx]
+        old_positions = [self.system.positions[idx].copy() for idx in atom_indices]
         self.system.target_clust_idx = self.system.find_target_cluster()
 
-        # Calculate wnew for the new configuration
-        nrb = 32  # Number of Rosenbluth trials
+        # Rosenbluth sampling over position AND orientation
+        nrb = 32
         new_energies = []
-        new_positions = []
+        new_configs = []  # Store (positions_list, rotation_matrix) tuples
 
-        for i in range(nrb):
+        anchor_com = self.system.get_molecule_com(anchor_idx)
+
+        for _ in range(nrb):
+            # Sample position in spherical shell around anchor
             r = np.cbrt(np.random.rand() * (self.system.clust_cutoff**3 - self.system.config.lower_cutoff**3) + self.system.config.lower_cutoff**3)
-            # Uniform sampling on the sphere for direction
             phi = 2 * np.pi * np.random.rand()
             cos_theta = 2 * np.random.rand() - 1
             sin_theta = np.sqrt(1 - cos_theta**2)
 
-            # Convert to Cartesian coordinates
             x = r * sin_theta * np.cos(phi)
             y = r * sin_theta * np.sin(phi)
             z = r * cos_theta
-            new_pos = (self.system.positions[anchor_idx] + np.array([x, y, z])) % (self.system.box_length)
+            new_com = (anchor_com + np.array([x, y, z])) % self.system.box_length
 
-            self.system.positions[target_idx] = new_pos
+            # Sample random orientation for molecules
+            if len(atom_indices) > 1:
+                rotation = random_rotation_matrix()
+                self.system.update_molecule_positions(target_idx, new_com, rotation)
+            else:
+                rotation = None
+                self.system.update_molecule_positions(target_idx, new_com)
+
             trial_energy = self.system.calc_full_energy()
             new_energies.append(trial_energy)
-            new_positions.append(new_pos.copy())
-            self.system.positions[target_idx] = old_pos
+            new_configs.append([self.system.positions[idx].copy() for idx in atom_indices])
 
-        # Calculate wold energies (old position + random positions in bulk)
-        old_energies = [old_energy]  # Start with old position
-        for _ in range(nrb - 1):  # Remaining trials
-            new_pos_out = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
-            while self.system.calc_dist(old_pos, new_pos_out) <= self.system.config.upper_cutoff:
-                new_pos_out = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
+            # Restore old positions
+            for i, idx in enumerate(atom_indices):
+                self.system.positions[idx] = old_positions[i]
 
-            self.system.positions[target_idx] = new_pos_out
+        # Calculate wold: old config + random bulk positions with random orientations
+        old_energies = [old_energy]
+        old_com = self.system.get_molecule_com(target_idx)
+
+        for _ in range(nrb - 1):
+            # Random position in bulk (far from old position)
+            new_com_out = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
+            while self.system.calc_dist(old_com, new_com_out) <= self.system.config.upper_cutoff:
+                new_com_out = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
+
+            # Random orientation for molecules
+            if len(atom_indices) > 1:
+                rotation = random_rotation_matrix()
+                self.system.update_molecule_positions(target_idx, new_com_out, rotation)
+            else:
+                self.system.update_molecule_positions(target_idx, new_com_out)
+
             trial_energy = self.system.calc_full_energy()
             old_energies.append(trial_energy)
-            self.system.positions[target_idx] = old_pos
 
-        # Use common reference energy for numerical stability
+            # Restore old positions
+            for i, idx in enumerate(atom_indices):
+                self.system.positions[idx] = old_positions[i]
+
+        # Calculate Rosenbluth weights
         all_energies = new_energies + old_energies
         energy_ref = min(all_energies)
 
-        # Calculate wnew with reference energy
         wnew = sum(np.exp(np.clip(-(E - energy_ref) / self.system.kT, -700, 700)) for E in new_energies)
-
-        # Calculate wold with same reference energy
         wold = sum(np.exp(np.clip(-(E - energy_ref) / self.system.kT, -700, 700)) for E in old_energies)
 
         if wnew == 0:
             self.rejections += 1
             return
 
-        # Select one configuration based on Rosenbluth weights for new positions
+        # Select configuration based on Rosenbluth weights
         weights_new = [np.exp(np.clip(-(E - energy_ref) / self.system.kT, -700, 700)) for E in new_energies]
         weights_norm = [w / wnew for w in weights_new]
         selected_idx = np.random.choice(len(new_energies), p=weights_norm)
         new_energy = new_energies[selected_idx]
-        selected_pos = new_positions[selected_idx]
-        self.system.positions[target_idx] = selected_pos
-            
+        selected_config = new_configs[selected_idx]
+
+        # Apply selected configuration
+        for i, idx in enumerate(atom_indices):
+            self.system.positions[idx] = selected_config[i]
+
+        # Calculate bias energy
         if self.system.bias is not None:
             self.system.tmp_target_clust_idx = self.system.target_clust_idx.copy()
             self.system.target_clust_idx = self.system.find_target_cluster()
@@ -231,26 +362,17 @@ class OutInAVBMCMove(Move):
 
         delta_energy = new_energy - old_energy
 
-        avbmc_energy = np.exp(-bias_energy/self.system.kT) * (wnew/wold) * (self.Vin / self.Vout) * ((self.system.num_particles - Nin) / (Nin + 1))
+        avbmc_energy = np.exp(-bias_energy/self.system.kT) * (wnew/wold) * (self.Vin / self.Vout) * ((self.system.num_molecules - Nin) / (Nin + 1))
         acc_prob = min(1, avbmc_energy)
 
-        # Store debug info for system-level logging
-        if self.system.debug_mode:
-            self.debug_wnew = wnew
-            self.debug_wold = wold
-            self.debug_avbmc_energy = avbmc_energy
-            self.debug_components = {
-                'bias_factor': np.exp(-bias_energy/self.system.kT),
-                'rosenbluth_ratio': wnew/wold if wold != 0 else float('inf'),
-                'volume_ratio': self.Vin / self.Vout,
-                'geometric_factor': (self.system.num_particles - Nin) / (Nin + 1)
-            }
-
+        # Accept/reject
         if np.random.rand() >= acc_prob:
-            self.system.positions[target_idx] = old_pos
+            # Reject - restore old positions
+            for i, idx in enumerate(atom_indices):
+                self.system.positions[idx] = old_positions[i]
             self.rejections += 1
         else:
-            # Accept move - position already set to selected_pos above
+            # Accept
             self.system.energy += delta_energy
             self.system.bias_energy += bias_energy
 
@@ -260,9 +382,10 @@ class NVTInOutMove(Move):
         super().__init__(system)
         self.Vin = 4.0/3.0 * np.pi * (self.system.clust_cutoff**3) - 4.0/3.0 * np.pi * (self.system.config.lower_cutoff**3)
         self.Vout = self.system.box_length**3
-    
+
     def attempt_move(self, anchor_idx, Nin_idx):
-        '''Attempt NVT move to remove particle from target cluster to bulk with nucleation bias'''
+        '''Move molecule from target cluster to bulk with random position and orientation'''
+        from utils import random_rotation_matrix
         self.attempts += 1
         Nin = len(Nin_idx)
 
@@ -271,128 +394,162 @@ class NVTInOutMove(Move):
             self.rejections += 1
             return
         target_idx = np.random.choice(Nin_idx)
-        old_pos = self.system.positions[target_idx].copy()
 
-        new_pos = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
-        regen = True
+        # Store old positions
+        atom_indices = self.system.molecules[target_idx]
+        old_positions = [self.system.positions[idx].copy() for idx in atom_indices]
+
         # Ensure target cluster is current
         self.system.target_clust_idx = self.system.find_target_cluster()
-        clust_pos = np.asarray([self.system.positions[i] for i in self.system.target_clust_idx])
+        clust_coms = np.array([self.system.get_molecule_com(i) for i in self.system.target_clust_idx])
+
+        # Generate random position far from all cluster molecules
+        regen = True
         while regen:
-            distances = np.linalg.norm(clust_pos - new_pos, axis=1)
+            new_com = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
+            distances = np.linalg.norm(clust_coms - new_com, axis=1)
             if np.all(distances > self.system.config.upper_cutoff):
                 regen = False
-            else:
-                new_pos = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
 
-        # Store old cluster size for AVBMC calculation
+        # Randomize orientation for molecules
+        if len(atom_indices) > 1:
+            rotation = random_rotation_matrix()
+            self.system.update_molecule_positions(target_idx, new_com, rotation)
+        else:
+            self.system.update_molecule_positions(target_idx, new_com)
+
+        # Calculate energy change
         old_cluster_size = len(self.system.target_clust_idx)
-        delta_energy, bias_energy = self.system.calc_energy_delta(target_idx, new_pos, old_pos)
-        
+        if self.system.bias is None:
+            old_energy = self.system.energy
+            new_energy = self.system.calc_full_energy()
+            delta_energy = new_energy - old_energy
+            bias_energy = 0.0
+        else:
+            old_energy = self.system.energy
+            new_cluster_size = len(self.system.find_target_cluster())
+            new_energy = self.system.calc_full_energy()
+            delta_energy = new_energy - old_energy
+            bias_energy = self.system.bias.denergy(new_cluster_size, old_cluster_size)
+
         try:
-            avbmc_energy = np.exp(-(delta_energy+bias_energy)/self.system.kT)*self.Vout/self.Vin*(Nin)/(self.system.num_particles-old_cluster_size+1)*(old_cluster_size/(old_cluster_size-1))
+            avbmc_energy = np.exp(-(delta_energy+bias_energy)/self.system.kT)*self.Vout/self.Vin*(Nin)/(self.system.num_molecules-old_cluster_size+1)*(old_cluster_size/(old_cluster_size-1))
         except:
-            # print("ZeroDivisionError")
-            # print(self.Vin, self.Vout, Nin, self.system.num_particles - old_cluster_size + 1, self.system.kT, old_cluster_size)
             avbmc_energy = 0
         acc_prob = min(1, avbmc_energy)
 
-        # Store debug info for system-level logging
-        if self.system.debug_mode:
-            self.debug_wnew = None  # NVT InOut doesn't use Rosenbluth
-            self.debug_wold = None
-            self.debug_avbmc_energy = avbmc_energy
-            self.debug_components = {
-                'boltzmann_factor': np.exp(-(delta_energy+bias_energy)/self.system.kT) if avbmc_energy != 0 else 0,
-                'volume_ratio': self.Vout/self.Vin,
-                'geometric_factor': Nin/(self.system.num_particles-old_cluster_size+1) if avbmc_energy != 0 else 0,
-                'nucleation_factor': old_cluster_size/(old_cluster_size-1) if old_cluster_size > 1 else 0
-            }
-
+        # Accept/reject
         if np.random.rand() >= acc_prob:
-            # Reject move - position is already back at old_pos from calc_energy_delta
+            # Reject - restore old positions
+            for i, idx in enumerate(atom_indices):
+                self.system.positions[idx] = old_positions[i]
             self.rejections += 1
         else:
-            # Accept move - update position and system energy
-            self.system.positions[target_idx] = new_pos
+            # Accept
             self.system.energy += delta_energy
             self.system.bias_energy += bias_energy
 
 
 class NVTOutInMove(Move):
     def __init__(self, system):
-        '''Initialize NVT out-in move for cluster growth with Rosenbluth sampling and nucleation bias'''
+        '''Initialize NVT out-in move with Rosenbluth sampling over position and orientation'''
         super().__init__(system)
         self.Vin = 4.0/3.0 * np.pi * (self.system.clust_cutoff**3) - 4.0/3.0 * np.pi * (self.system.config.lower_cutoff**3)
         self.Vout = self.system.box_length**3
-    
+
     def attempt_move(self, anchor_idx, Nin_idx):
-        '''Attempt NVT move to insert bulk particle into target cluster using Rosenbluth weighting'''
+        '''Move molecule from bulk to target cluster with Rosenbluth sampling over position+orientation'''
+        from utils import random_rotation_matrix
         self.attempts += 1
         Nin = len(Nin_idx)
 
-        target_idx = np.random.randint(self.system.num_particles)
-        # Ensure target cluster is current
+        target_idx = np.random.randint(self.system.num_molecules)
         self.system.target_clust_idx = self.system.find_target_cluster()
         while (target_idx in Nin_idx) or (target_idx == anchor_idx) or (target_idx == 0) or (target_idx in self.system.target_clust_idx):
-            target_idx = np.random.randint(self.system.num_particles)
+            target_idx = np.random.randint(self.system.num_molecules)
 
         old_energy = self.system.energy
-        old_pos = self.system.positions[target_idx].copy()
+        atom_indices = self.system.molecules[target_idx]
+        old_positions = [self.system.positions[idx].copy() for idx in atom_indices]
         self.system.target_clust_idx = self.system.find_target_cluster()
 
-        # Calculate wnew for the new configuration
-        nrb = 32  # Number of Rosenbluth trials
+        # Rosenbluth sampling over position AND orientation
+        nrb = 32
         new_energies = []
-        new_positions = []
+        new_configs = []
+
+        anchor_com = self.system.get_molecule_com(anchor_idx)
 
         for _ in range(nrb):
+            # Sample position in spherical shell
             displacement = np.round(((np.random.rand(3) - 0.5) * self.system.config.upper_cutoff * 2), 3)
             while ((sum(displacement**2) > self.system.config.upper_cutoff**2) or (sum(displacement**2) < self.system.config.lower_cutoff**2)):
                 displacement = np.round(((np.random.rand(3) - 0.5) * self.system.config.upper_cutoff * 2), 3)
 
-            new_pos = (self.system.positions[anchor_idx] + displacement) % (self.system.box_length)
-            self.system.positions[target_idx] = new_pos
+            new_com = (anchor_com + displacement) % self.system.box_length
+
+            # Sample random orientation
+            if len(atom_indices) > 1:
+                rotation = random_rotation_matrix()
+                self.system.update_molecule_positions(target_idx, new_com, rotation)
+            else:
+                self.system.update_molecule_positions(target_idx, new_com)
+
             trial_energy = self.system.calc_full_energy()
             new_energies.append(trial_energy)
-            new_positions.append(new_pos.copy())
-            self.system.positions[target_idx] = old_pos
+            new_configs.append([self.system.positions[idx].copy() for idx in atom_indices])
 
-        # Calculate wold energies (old position + random positions in bulk)
-        old_energies = [old_energy]  # Start with old position
-        for _ in range(nrb - 1):  # Remaining trials
-            new_pos_out = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
-            while self.system.calc_dist(old_pos, new_pos_out) <= self.system.config.upper_cutoff:
-                new_pos_out = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
+            # Restore old positions
+            for i, idx in enumerate(atom_indices):
+                self.system.positions[idx] = old_positions[i]
 
-            self.system.positions[target_idx] = new_pos_out
+        # Calculate wold: old config + random bulk positions with random orientations
+        old_energies = [old_energy]
+        old_com = self.system.get_molecule_com(target_idx)
+
+        for _ in range(nrb - 1):
+            # Random position in bulk
+            new_com_out = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
+            while self.system.calc_dist(old_com, new_com_out) <= self.system.config.upper_cutoff:
+                new_com_out = np.round(((np.random.rand(3) - 0.5) * self.system.box_length * 2), 3) % self.system.box_length
+
+            # Random orientation
+            if len(atom_indices) > 1:
+                rotation = random_rotation_matrix()
+                self.system.update_molecule_positions(target_idx, new_com_out, rotation)
+            else:
+                self.system.update_molecule_positions(target_idx, new_com_out)
+
             trial_energy = self.system.calc_full_energy()
             old_energies.append(trial_energy)
-            self.system.positions[target_idx] = old_pos
 
-        # Use common reference energy for numerical stability
+            # Restore old positions
+            for i, idx in enumerate(atom_indices):
+                self.system.positions[idx] = old_positions[i]
+
+        # Calculate Rosenbluth weights with reference energy for numerical stability
         all_energies = new_energies + old_energies
         energy_ref = min(all_energies)
 
-        # Calculate wnew with reference energy
         wnew = sum(np.exp(np.clip(-(E - energy_ref) / self.system.kT, -700, 700)) for E in new_energies)
-
-        # Calculate wold with same reference energy
         wold = sum(np.exp(np.clip(-(E - energy_ref) / self.system.kT, -700, 700)) for E in old_energies)
 
         if wnew == 0:
             self.rejections += 1
             return
 
-        # Select one configuration based on Rosenbluth weights for new positions
+        # Select configuration based on Rosenbluth weights
         weights_new = [np.exp(np.clip(-(E - energy_ref) / self.system.kT, -700, 700)) for E in new_energies]
         weights_norm = [w / wnew for w in weights_new]
         selected_idx = np.random.choice(len(new_energies), p=weights_norm)
         new_energy = new_energies[selected_idx]
-        selected_pos = new_positions[selected_idx]
-        self.system.positions[target_idx] = selected_pos
+        selected_config = new_configs[selected_idx]
 
+        # Apply selected configuration
+        for i, idx in enumerate(atom_indices):
+            self.system.positions[idx] = selected_config[i]
 
+        # Calculate bias energy
         self.system.tmp_target_clust_idx = self.system.target_clust_idx.copy()
         if self.system.bias is not None:
             self.system.target_clust_idx = self.system.find_target_cluster()
@@ -402,27 +559,17 @@ class NVTOutInMove(Move):
 
         delta_energy = new_energy - old_energy
 
-        avbmc_energy = np.exp(-bias_energy/self.system.kT) * (wnew/wold) * (self.Vin / self.Vout) * ((self.system.num_particles - len(self.system.tmp_target_clust_idx)) / (Nin + 1)) * ((len(self.system.tmp_target_clust_idx)) / (len(self.system.tmp_target_clust_idx)+1))
+        avbmc_energy = np.exp(-bias_energy/self.system.kT) * (wnew/wold) * (self.Vin / self.Vout) * ((self.system.num_molecules - len(self.system.tmp_target_clust_idx)) / (Nin + 1)) * ((len(self.system.tmp_target_clust_idx)) / (len(self.system.tmp_target_clust_idx)+1))
 
         acc_prob = min(1, avbmc_energy)
 
-        # Store debug info for system-level logging
-        if self.system.debug_mode:
-            self.debug_wnew = wnew
-            self.debug_wold = wold
-            self.debug_avbmc_energy = avbmc_energy
-            self.debug_components = {
-                'bias_factor': np.exp(-bias_energy/self.system.kT),
-                'rosenbluth_ratio': wnew/wold if wold != 0 else float('inf'),
-                'volume_ratio': self.Vin / self.Vout,
-                'geometric_factor': (self.system.num_particles - len(self.system.tmp_target_clust_idx)) / (Nin + 1),
-                'nucleation_factor': (len(self.system.tmp_target_clust_idx)) / (len(self.system.tmp_target_clust_idx)+1)
-            }
-
+        # Accept/reject
         if np.random.rand() >= acc_prob:
-            self.system.positions[target_idx] = old_pos
+            # Reject - restore old positions
+            for i, idx in enumerate(atom_indices):
+                self.system.positions[idx] = old_positions[i]
             self.rejections += 1
         else:
-            # Accept move - position already set to selected_pos above
+            # Accept
             self.system.energy += delta_energy
             self.system.bias_energy += bias_energy
