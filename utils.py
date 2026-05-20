@@ -1,7 +1,6 @@
 import numpy as np
 from numba import njit
 import logging
-from scipy.special import erfc
 import math
 from ase import Atoms
 #import cuequivariance_torch
@@ -121,132 +120,27 @@ def find_neighbors_numba(positions, pos1, cutoff, box_length):
 
 
 @njit(cache=False)
-def calc_coulombic_numba(positions, charges, box_size, cutoff, alpha, ke_eff):
-    '''Calculate electrostatic energy using Wolf summation with PBC (numba-optimized).
-
-    Args:
-        positions: Array of particle positions (N x 3)
-        charges: Array of particle charges (N,)
-        box_size: Size of periodic box
-        cutoff: Cutoff distance for interactions
-        alpha: Wolf summation damping parameter
-        ke_eff: Effective Coulomb constant (ke / dielectric)
-
-    Returns:
-        Total Coulombic energy in eV
-    '''
+def calc_coulomb_cut_numba(positions, charges, box_size, cutoff, ke_eff):
+    '''Calculate electrostatic energy using plain truncated Coulomb (coul/cut) with PBC (numba-optimized).'''
     n_atoms = len(positions)
     total_energy = 0.0
-    alpha_r_cut = alpha * cutoff
 
-    # Pre-compute erfc(alpha * r_cut) using math.erfc (numba compatible)
-    erfc_alpha_r_cut = math.erfc(alpha_r_cut)
-
-    # Calculate pairwise electrostatic energy using Wolf summation
     for i in range(n_atoms):
         for j in range(i + 1, n_atoms):
-            # Calculate distance with PBC (inline for speed)
             dx = positions[j, 0] - positions[i, 0]
             dy = positions[j, 1] - positions[i, 1]
             dz = positions[j, 2] - positions[i, 2]
 
-            # Apply periodic boundary conditions
             dx -= box_size * round(dx / box_size)
             dy -= box_size * round(dy / box_size)
             dz -= box_size * round(dz / box_size)
 
             r = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-            # Skip if beyond cutoff
             if r >= cutoff:
                 continue
 
-            # Handle overlapping particles (shouldn't happen in well-behaved simulation)
-            if r < 0.01:  # particles closer than 0.01 Angstrom
-                return 1e10  # Return very high energy to reject this configuration
-
-            qi = charges[i]
-            qj = charges[j]
-
-            # Wolf potential: U = ke * qi * qj * [erfc(α*r)/r - erfc(α*R_c)/R_c]
-            alpha_r = alpha * r
-            erfc_alpha_r = math.erfc(alpha_r)
-
-            # Wolf pair energy
-            pair_energy = ke_eff * qi * qj * (
-                erfc_alpha_r / r - erfc_alpha_r_cut / cutoff
-            )
-            total_energy += pair_energy
-
-    # Add Wolf self-energy correction for each atom
-    # Self-energy correction: -ke * qi^2 * alpha/sqrt(pi)
-    sqrt_pi = 1.7724538509055159  # math.sqrt(math.pi) precomputed
-    for i in range(n_atoms):
-        qi = charges[i]
-        self_energy = -ke_eff * qi * qi * alpha / sqrt_pi
-        total_energy += self_energy
-
-    return total_energy
-
-
-@njit(cache=False)
-def calc_lj_numba(positions, types, box_size, cutoff, epsilon_matrix, sigma_matrix):
-    '''Calculate Lennard-Jones interaction energy with PBC (numba-optimized).
-
-    Args:
-        positions: Array of particle positions (N x 3)
-        types: Array of particle types (N,) - integer indices
-        box_size: Size of periodic box
-        cutoff: Cutoff distance for interactions
-        epsilon_matrix: 2D array of epsilon values indexed by [type_i, type_j] in eV
-        sigma_matrix: 2D array of sigma values indexed by [type_i, type_j] in Angstroms
-
-    Returns:
-        Total LJ energy in eV
-    '''
-    n_atoms = len(positions)
-    total_energy = 0.0
-
-    # Calculate energy for all pairs
-    for i in range(n_atoms):
-        for j in range(i + 1, n_atoms):
-            # Get atom types for this pair
-            type_i = types[i]
-            type_j = types[j]
-
-            # Get LJ parameters from matrices
-            epsilon = epsilon_matrix[type_i, type_j]
-            sigma = sigma_matrix[type_i, type_j]
-
-            # Calculate distance with PBC (inline for speed)
-            dx = positions[j, 0] - positions[i, 0]
-            dy = positions[j, 1] - positions[i, 1]
-            dz = positions[j, 2] - positions[i, 2]
-
-            # Apply periodic boundary conditions
-            dx -= box_size * round(dx / box_size)
-            dy -= box_size * round(dy / box_size)
-            dz -= box_size * round(dz / box_size)
-
-            r = math.sqrt(dx*dx + dy*dy + dz*dz)
-
-            # Skip if beyond cutoff
-            if r >= cutoff:
-                continue
-
-            # Handle overlapping particles (shouldn't happen in well-behaved simulation)
-            if r < 0.01:  # particles closer than 0.01 Angstrom
-                return 1e10  # Return very high energy to reject this configuration
-
-            # Calculate LJ energy: U_LJ = 4*epsilon*[(sigma/r)^12 - (sigma/r)^6]
-            sigma_over_r = sigma / r
-            sigma6 = sigma_over_r * sigma_over_r * sigma_over_r
-            sigma6 = sigma6 * sigma6  # sigma^6
-            sigma12 = sigma6 * sigma6  # sigma^12
-
-            # Energy for this pair
-            pair_energy = 4.0 * epsilon * (sigma12 - sigma6)
-            total_energy += pair_energy
+            total_energy += ke_eff * charges[i] * charges[j] / r
 
     return total_energy
 
@@ -260,28 +154,9 @@ class PMF:
         type_to_symbol = {0: 'Na', 1: 'Cl'}
         self.symbols = [type_to_symbol[t] for t in types]
         # parameters
-        self.cutoff = 9.0
-        self.alpha = 0.25
+        self.cutoff = 25.0
         self.dielectric = 73.0
         self.ke_eff = 14.39965 / self.dielectric  # eV·Å/e²
-
-        # LJ parameters dictionary (for reference)
-        self.lj_params = {
-        ('Na', 'Na'): {'epsilon': 0.1, 'sigma': 2.584},
-        ('Na', 'Cl'): {'epsilon': 0.1, 'sigma': 3.31},
-        ('Cl', 'Cl'): {'epsilon': 0.1, 'sigma': 4.036}
-        }
-
-        # Pre-compute LJ parameter matrices for numba (indexed by type: 0=Na, 1=Cl)
-        kcal_to_ev = 0.043364
-        self.epsilon_matrix = np.array([
-            [0.1 * kcal_to_ev, 0.1 * kcal_to_ev],  # Na-Na, Na-Cl
-            [0.1 * kcal_to_ev, 0.1 * kcal_to_ev]   # Cl-Na, Cl-Cl
-        ], dtype=np.float64)
-        self.sigma_matrix = np.array([
-            [2.584, 3.31],   # Na-Na, Na-Cl
-            [3.31, 4.036]    # Cl-Na, Cl-Cl
-        ], dtype=np.float64)
 
         # NequIP setup - LAZY LOADING (defer model loading until first use)
         self.atoms = Atoms(symbols=self.symbols, positions=np.zeros((len(self.types), 3)), cell=[box_size]*3, pbc=True)
@@ -318,12 +193,9 @@ class PMF:
         return total_energy
 
     def calc_prior_energies(self, positions):
-        '''Calculate total energy from Lennard-Jones and electrostatic interactions (numba-optimized)'''
-        lj_energy = calc_lj_numba(positions, self.types, self.box_size,
-                                  self.cutoff, self.epsilon_matrix, self.sigma_matrix)
-        coulomb_energy = calc_coulombic_numba(positions, self.charges, self.box_size,
-                                              self.cutoff, self.alpha, self.ke_eff)
-        return lj_energy + coulomb_energy
+        '''Calculate total Coulomb energy (coul/cut, 25 Å cutoff, dielectric 73)'''
+        return calc_coulomb_cut_numba(positions, self.charges, self.box_size,
+                                     self.cutoff, self.ke_eff)
 
 class Bias:
     def __init__(self, max_size=200, min_size=0, path=None, center=0, type="harmonic", force_constant=0.0, kT=0.596):

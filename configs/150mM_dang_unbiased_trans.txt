@@ -1,11 +1,11 @@
 # CONCENTRATION
-concentration = 2.0
+concentration = 0.15
 num_particles = 500
 
 # SIMULATION SETTINGS
 equil_steps = 100
-prod_steps = 100000
-output_interval = 100
+prod_steps = 4000000
+output_interval = 1000
 internal_interval = 1000
 seed = 11
 
@@ -13,9 +13,9 @@ seed = 11
 bias_type = none
 
 # MOVE RATES
-avbmc_rate = 0.2
-nvt_rate = 0.1
-translation_rate = 0.7
+avbmc_rate = 0.0
+nvt_rate = 0.0
+translation_rate = 1.0
 swap_rate = 0.0
 max_displacement = 30
 
@@ -25,6 +25,6 @@ lower_cutoff = 2.5
 clust_cutoff = 3.5
 
 # INPUT FILES
-model_path = /gscratch/cheme/mzorman/06_MLP/models/unweightedEnergies_ase_best_a40.nequip.pth
+model_path = /gscratch/cheme/mzorman/06_MLP/models/NaCl/NaCl_0518_1r.nequip.pth
 input_path = none
 debug_mode = False

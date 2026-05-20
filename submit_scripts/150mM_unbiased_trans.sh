@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=150mM_adapUS_mlip
+#SBATCH --job-name=150mM_base
 #SBATCH --account=zeelab
 #SBATCH --partition=gpu-a40
 #SBATCH --nodes=1
@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=100G
 #SBATCH --gres=gpu:1
-#SBATCH --time=128:00:00
+#SBATCH --time=72:00:00
 
 echo "SLURM_JOBID="$SLURM_JOBID
 echo "SLURM_JOB_NODELIST"=$SLURM_JOB_NODELIST
@@ -20,6 +20,6 @@ module load cuda/12.4.1
 
 export PATH="/gscratch/cheme/mzorman/03_misc/miniconda3/bin:$PATH"
 conda activate mlp_cuda
-python simulation.py -jobname ../NaCl_jobs/150mM_adapUS_initBias_noReset_0329_it2 -config configs/150mM_dang_adapUS_large_initBias_it2.txt -np 8 -adapUS -multi_inputs
+python simulation.py -jobname ../NaCl_jobs/150mM_unbiased_trans -config configs/150mM_dang_unbiased_trans.txt -np 8
 
 exit 

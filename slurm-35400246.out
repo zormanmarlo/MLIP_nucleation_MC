@@ -1,0 +1,5 @@
+SLURM_JOBID=35400246
+SLURM_JOB_NODELIST=g3041
+SLURM_NNODES=1
+SLURMTMPDIR=
+working directory = /mmfs1/gscratch/cheme/mzorman/06_MLP/MC/1r_tests/driver
