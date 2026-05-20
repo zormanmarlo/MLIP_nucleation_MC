@@ -4,6 +4,8 @@ import argparse
 
 import cProfile
 import pstats
+import torch
+from torch.profiler import profile, record_function, ProfilerActivity
 
 import numpy as np
 import pickle as pkl
@@ -185,11 +187,23 @@ if __name__ == "__main__":
         if args.np == 1:
             pr = cProfile.Profile()
             pr.enable()
+            #scalene_profiler.start()
+
+            #with profile(
+            #    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            #    record_shapes=False,
+            #    with_stack=False
+            #) as prof:
+            #    with record_function("equilibration"):
             equilibration_run(simulations[0])
             production_run(simulations[0])
-            pr.disable()
+            #print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+            #prof.export_chrome_trace("trace.json")
+           # scalene_profiler.stop()
+
+            #pr.disable()
             ps = pstats.Stats(pr).sort_stats('cumulative')
-            ps.print_stats(10)
+            ps.print_stats(100)
         else:
             with mp.Pool(processes=args.np) as pool:
                 logger.info(f"Running {args.np} markov chains")
@@ -200,7 +214,7 @@ if __name__ == "__main__":
 
     # Run until potentials are converged
     else:
-        # Run unbiased simulation
+        # Run unbiased equilibration first production iteration
         with mp.Pool(processes=args.np) as pool:
             pool.map(equilibration_run, simulations)
             pool.map(production_run, simulations)
@@ -234,7 +248,7 @@ if __name__ == "__main__":
             cluster_counts = np.concatenate([sim.target_sizes for sim in simulations])
             dist = np.histogram(cluster_counts, bins=np.arange(1, simulations[0].config.parameters["max_target"]+2))[0]
 
-            with open(f"{args.path}/{args.jobname}/histograms.out", "a") as file:
+            with open(f"{args.jobname}/histograms.out", "a") as file:
                 file.write(f"{dist}\n")
 
             # Update bias in main process
@@ -248,7 +262,7 @@ if __name__ == "__main__":
             potential = simulations[0].system.bias.bias
             np.save(bias_file, potential)
 
-            with open(f"{args.path}/{args.jobname}/potentials.out", "a") as file:
+            with open(f"{args.jobname}/potentials.out", "a") as file:
                 file.write(f"{potential}\n")
 
             logger.info(f"Iteration {current_it}: Updated bias saved to {bias_file}")
@@ -258,14 +272,14 @@ if __name__ == "__main__":
                 potential = simulations[0].system.bias.bias
 
                 # Save final outputs
-                with open(f"{args.path}/{args.jobname}/histograms.out", "a") as file:
+                with open(f"{args.jobname}/histograms.out", "a") as file:
                     file.write("FINAL HISTOGRAM:\n")
                     file.write(f"{dist}\n")
-                with open(f"{args.path}/{args.jobname}/potentials.out", "a") as file:
+                with open(f"{args.jobname}/potentials.out", "a") as file:
                     file.write("FINAL POTENTIAL:\n")
                     file.write(f"{potential}\n")
 
                 # Save final bias potential
-                np.save(f"{args.path}/{args.jobname}/final_bias_potential.npy", potential)
+                np.save(f"{args.jobname}/final_bias_potential.npy", potential)
                 cont = False
 

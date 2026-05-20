@@ -1,5 +1,5 @@
 # CONCENTRATION
-concentration = 2.0
+concentration = 0.15
 num_particles = 500
 
 # SIMULATION SETTINGS
@@ -15,8 +15,8 @@ max_target = 10
 
 # MOVE RATES
 avbmc_rate = 0.2
-nvt_rate = 0.1
-translation_rate = 0.7
+nvt_rate = 0.0
+translation_rate = 0.8
 swap_rate = 0.0
 max_displacement = 30
 
@@ -27,6 +27,6 @@ clust_cutoff = 3.5
 
 # INPUT FILES
 model_path = /gscratch/cheme/mzorman/06_MLP/models/unweightedEnergies_ase_best_a40.nequip.pth
-bias_path = bias/2M_full_potential.txt
+bias_path = bias/150mM_target_potential.txt
 input_path = none
 debug_mode = False

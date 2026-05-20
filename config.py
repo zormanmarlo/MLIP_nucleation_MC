@@ -15,13 +15,14 @@ class Config:
         logger.info(f"Box length: {self.parameters['box_length']} Å")
         logger.info(f"Number of particles: {self.parameters['num_particles']}")
         logger.info(f"Bias: {self.parameters.get('bias_type', 'none')}")
-
+        
         self.default_params = [
             'box_length', 'num_particles', 'equil_steps', 'prod_steps', 'output_interval',
             'internal_interval', 'seed', 'bias_type', 'avbmc_rate', 'nvt_rate',
             'translation_rate', 'swap_rate', 'max_displacement', 'upper_cutoff',
-            'lower_cutoff', 'clust_cutoff', 'ff_path', 'input_path', 'kT', 'ratio',
-            'input_file', 'lower_energy_cutoff', 'energy_cutoff', 'concentration', 'debug_mode'
+            'lower_cutoff', 'clust_cutoff', 'model_path', 'input_path', 'kT', 'ratio',
+            'input_file', 'lower_energy_cutoff', 'energy_cutoff', 'concentration', 'debug_mode',
+            'min_cluster_size',
         ]
         for param in self.default_params:
             if param not in self.parameters:
@@ -63,13 +64,17 @@ class Config:
             if 'bias_k' not in self.parameters:
                 logger.warning("Parameter 'bias_k' not set for harmonic bias. Defaulting to 1.0.")
                 self.parameters['bias_k'] = 1.0
-            self.bias = Bias(center=self.parameters['bias_center'], type='harmonic', force_constant=self.parameters['bias_k'])
+            self.bias = Bias(center=self.parameters['bias_center'], type='harmonic', force_constant=self.parameters['bias_k'], min_size=self.parameters['min_cluster_size'])
         elif self.parameters['bias_type'] == 'linear':
-            if 'bias_file' not in self.parameters:
-                logger.warning("Parameter 'bias_file' not set for linear bias. Setting bias to zero")
-                self.bias = Bias(type='linear', max_size=self.parameters.get('max_target', 200))
+            if 'bias_path' not in self.parameters:
+                logger.warning("Parameter 'bias_path' not set for linear bias. Setting bias to zero")
+                self.bias = Bias(type='linear', max_size=self.parameters.get('max_target', 200), min_size=self.parameters['min_cluster_size'])
             else:
-                self.bias = Bias(path=self.parameters['bias_file'], type='linear', max_size=self.parameters.get('max_target', 200))
+                # Check to make sure max target and length from bias file are consistent
+                self.bias = Bias(path=self.parameters['bias_path'], type='linear', max_size=self.parameters.get('max_target', 200), min_size=self.parameters['min_cluster_size'])
+                if self.bias.num_bins != self.parameters.get('max_target', 200):
+                    logger.warning(f"Bias file has {self.bias.num_bins} bins but max_target is set to {self.parameters.get('max_target', 200)}. This may cause issues with bias application.")
+
         else:
             self.bias = None
     
@@ -98,6 +103,10 @@ class Config:
         # if no debug_mode is provided, default to False
         if 'debug_mode' not in self.parameters:
             self.parameters['debug_mode'] = False
+
+        # if no min_cluster_size is provided, default to 0 (no minimum constraint)
+        if 'min_cluster_size' not in self.parameters:
+            self.parameters['min_cluster_size'] = 0
 
         # Parse the ratio
         self._parse_ratio()

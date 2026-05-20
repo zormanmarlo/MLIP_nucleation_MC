@@ -4,14 +4,13 @@ num_particles = 500
 
 # SIMULATION SETTINGS
 equil_steps = 100
-prod_steps = 50000
+prod_steps = 100000
 output_interval = 100
 internal_interval = 1000
 seed = 11
 
 # BIAS SETTINGS
-bias_type = linear
-max_target = 10
+bias_type = none
 
 # MOVE RATES
 avbmc_rate = 0.2
@@ -26,7 +25,6 @@ lower_cutoff = 2.5
 clust_cutoff = 3.5
 
 # INPUT FILES
-model_path = /gscratch/cheme/mzorman/06_MLP/models/unweightedEnergies_ase_best_a40.nequip.pth
-bias_path = bias/2M_full_potential.txt
+model_path = /gscratch/cheme/mzorman/06_MLP/models/weightedEnergies_ase_best_a40.nequip.pth
 input_path = none
 debug_mode = False

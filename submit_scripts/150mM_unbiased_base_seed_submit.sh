@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=2M_adapUS_mlip
+#SBATCH --job-name=150mM_base_seed
 #SBATCH --account=zeelab
 #SBATCH --partition=gpu-l40
 #SBATCH --nodes=1
@@ -20,5 +20,6 @@ module load cuda/12.4.1
 
 export PATH="/gscratch/cheme/mzorman/03_misc/miniconda3/bin:$PATH"
 conda activate mlp_cuda
-python simulation.py -jobname ../NaCl_jobs/2M_gpu_benchmark -config configs/2M_dang_unbiased.txt
+python simulation.py -jobname ../NaCl_jobs/150mM_unbiased_base_seed -config configs/150mM_dang_unbiased_base_seed.txt -np 8
+
 exit 

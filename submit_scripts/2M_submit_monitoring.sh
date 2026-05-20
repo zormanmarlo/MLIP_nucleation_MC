@@ -28,7 +28,7 @@ MONITOR_PID=$!
 
 # Run simulation
 echo "Starting simulation at $(date)"
-python simulation.py -jobname ../NaCl_jobs/2M_gpu_benchmark -config configs/2M_dang_unbiased.txt -np 1
+python simulation.py -jobname ../NaCl_jobs/2M_gpu_benchmark_1mc -config configs/2M_dang_unbiased.txt -np 1
 echo "Finished simulation at $(date)"
 
 # Stop monitoring
@@ -36,3 +36,4 @@ kill $MONITOR_PID
 
 echo "GPU monitoring saved to: gpu_monitor_${SLURM_JOBID}.csv"
 exit
+

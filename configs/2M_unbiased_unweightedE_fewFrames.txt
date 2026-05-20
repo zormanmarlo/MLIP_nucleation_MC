@@ -3,8 +3,8 @@ concentration = 2.0
 num_particles = 500
 
 # SIMULATION SETTINGS
-equil_steps = 0
-prod_steps = 10000
+equil_steps = 100
+prod_steps = 100000
 output_interval = 100
 internal_interval = 1000
 seed = 11
@@ -17,7 +17,7 @@ avbmc_rate = 0.2
 nvt_rate = 0.1
 translation_rate = 0.7
 swap_rate = 0.0
-max_displacement = 7.5
+max_displacement = 30
 
 # CLUSTER DEFINITION
 upper_cutoff = 3.5
@@ -25,6 +25,6 @@ lower_cutoff = 2.5
 clust_cutoff = 3.5
 
 # INPUT FILES
-ff_path = Dang_NaCl.txt
+model_path = /gscratch/cheme/mzorman/06_MLP/models/unweightedEnergies_fewFrames_ase_best.a40.nequip.pth
 input_path = none
 debug_mode = False

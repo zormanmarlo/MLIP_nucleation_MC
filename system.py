@@ -46,7 +46,7 @@ class System:
         '''Initialize PMF object with potential file from config'''
         charge_map = {0: 1.0, 1: -1.0}  # Example charge mapping for two types
         self.charges = [charge_map[t] for t in self.types]
-        self.pmf = PMF(self.types, self.charges, self.box_length)
+        self.pmf = PMF(self.types, self.charges, self.box_length, self.config.model_path)
 
     def init_positions(self, input_path=None, multi=False):
         '''Initialize particle positions either from input file or randomly, ensuring proper ratios and minimum separations'''

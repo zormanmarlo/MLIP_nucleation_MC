@@ -15,8 +15,8 @@ max_target = 10
 
 # MOVE RATES
 avbmc_rate = 0.2
-nvt_rate = 0.1
-translation_rate = 0.7
+nvt_rate = 0.0
+translation_rate = 0.8
 swap_rate = 0.0
 max_displacement = 30
 

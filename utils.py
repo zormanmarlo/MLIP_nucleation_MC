@@ -4,6 +4,7 @@ import logging
 from scipy.special import erfc
 import math
 from ase import Atoms
+#import cuequivariance_torch
 from nequip.ase import NequIPCalculator
 
 def setup_logger():
@@ -250,7 +251,7 @@ def calc_lj_numba(positions, types, box_size, cutoff, epsilon_matrix, sigma_matr
     return total_energy
 
 class PMF:
-    def __init__(self, types, charges, box_size):
+    def __init__(self, types, charges, box_size, model_path):
         '''Set parameters for physics prior and load MLP'''
         # system settings
         self.types = np.array(types, dtype=np.int32)
@@ -286,7 +287,7 @@ class PMF:
         self.atoms = Atoms(symbols=self.symbols, positions=np.zeros((len(self.types), 3)), cell=[box_size]*3, pbc=True)
         self.atoms.calc = None  # Ensure no calculator is attached to atoms object
         # Store model configuration instead of loading immediately
-        self.model_path = '../ML_training/dang/2M_training_100k_frames/results/ase_best_a40.nequip.pth'
+        self.model_path = model_path
         self.device = 'cuda'
         self.chemical_symbols = ['Na', 'Cl']
         self.calc = None  # Model will be loaded on first call to energies()
@@ -325,17 +326,20 @@ class PMF:
         return lj_energy + coulomb_energy
 
 class Bias:
-    def __init__(self, max_size=200, path=None, center=0, type="harmonic", force_constant=0.0, kT=0.596):
+    def __init__(self, max_size=200, min_size=0, path=None, center=0, type="harmonic", force_constant=0.0, kT=0.596):
         '''Initialize bias potential for umbrella sampling with harmonic or linear bias types'''
         self.max_size = max_size
+        self.min_size = min_size
         self.type = type
         self.center = center
         self.kT = kT
+        self.path = path
         if type == "linear":
             if path is None:
                 self.bias = np.zeros(max_size)
             else:
                 self.bias = np.loadtxt(path)
+            self.num_bins = len(self.bias)
         elif type == "harmonic":
             self.center = center
             self.force_constant = force_constant
@@ -344,9 +348,9 @@ class Bias:
 
     def denergy(self, new, old):
         '''Calculate change in bias energy between old and new cluster sizes'''
-        # Hard coding massive bias for moves that lead to clusters larger than max_size
+        # Hard coding massive bias for moves that lead to clusters smaller than min_size or larger than max_size
         # Might need to move this to acceptance criteria in order to avoid overflow errors
-        if new > self.max_size:
+        if new < self.min_size or new > self.max_size:
             bias = 100000
         else:
             if self.type == "harmonic":
@@ -357,7 +361,7 @@ class Bias:
     
     def energy(self, size):
         '''Calculate bias energy for given cluster size'''
-        if size > self.max_size:
+        if size < self.min_size or size > self.max_size:
             bias = 100000
         else:
             if self.type == "harmonic":
@@ -369,7 +373,7 @@ class Bias:
     # Update bias for adaptive US
     def update(self, distribution):
         '''Update bias potential for adaptive umbrella sampling based on cluster size distribution'''
-        new_potential = np.zeros_like(self.bias) # will likely need to change this to account for new size
+        new_potential = self.bias.copy()
         pivot_bin = np.argmax(distribution)
         n_star = distribution[pivot_bin]
         n_star_m = 1 / n_star
@@ -377,7 +381,8 @@ class Bias:
         for i in range(len(distribution)):
             if distribution[i] > 0:
                 new_potential[i] = self.bias[i]  + self.kT*np.log(distribution[i] / n_star)
-            else:
+            # Only reset bins with zero counts if we are not using an initial estimate of the bias
+            elif self.path is None:
                 new_potential[i] = self.bias[pivot_bin] + self.kT*np.log(n_star_m)
         
         # Re-shift potentials to ensure the reference state is 0kBT.
