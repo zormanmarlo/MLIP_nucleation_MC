@@ -1,48 +1,48 @@
-SLURM_JOBID=35400260
-SLURM_JOB_NODELIST=g3074
+SLURM_JOBID=35402264
+SLURM_JOB_NODELIST=g3062
 SLURM_NNODES=1
 SLURMTMPDIR=
 working directory = /mmfs1/gscratch/cheme/mzorman/06_MLP/MC/1r_tests/driver
-INFO - Starting job: ../NaCl_jobs/150mM_unbiased_test
+INFO - Starting job: ../NaCl_jobs/150mM_adapUS_initbias
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 11
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 12
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 13
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 14
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 15
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 16
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 17
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 18
 INFO - Running 8 markov chains
 INFO - Running equilibration

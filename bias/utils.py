@@ -4,7 +4,7 @@ import logging
 import math
 from ase import Atoms
 #import cuequivariance_torch
-from nequip.ase import NequIPCalculator
+#from nequip.ase import NequIPCalculator
 
 def setup_logger():
     '''Initialize logger for Monte Carlo simulation with appropriate formatting and handlers'''
@@ -140,9 +140,6 @@ def calc_coulomb_cut_numba(positions, charges, box_size, cutoff, ke_eff):
             if r >= cutoff:
                 continue
 
-            if r < 0.01:
-                return 1e10
-
             total_energy += ke_eff * charges[i] * charges[j] / r
 
     return total_energy
@@ -255,10 +252,7 @@ class Bias:
         
         for i in range(len(distribution)):
             if distribution[i] > 0:
-                new_potential[i] = self.bias[i] + self.kT*np.log(distribution[i] / n_star)
-            # If we have initial bias estimate but no samples, use n_star_m to update that bias
-            elif self.path is not None:
-                new_potential[i] = self.bias[i] + self.kT*np.log(n_star_m) 
+                new_potential[i] = self.bias[i]  + self.kT*np.log(distribution[i] / n_star)
             # Only reset bins with zero counts if we are not using an initial estimate of the bias
             elif self.path is None:
                 new_potential[i] = self.bias[pivot_bin] + self.kT*np.log(n_star_m)

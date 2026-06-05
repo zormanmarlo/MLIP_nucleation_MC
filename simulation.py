@@ -81,7 +81,7 @@ class Simulation:
             f.write(f'  {self.config.num_particles}\n')
             f.write(f'  Step: {step}\n')
             for i, particle in enumerate(self.system.positions):
-                atom_type = 'H' if self.system.types[i] == 0 else 'O'
+                atom_type = 'Na' if self.system.types[i] == 0 else 'Cl'
                 f.write(f'{atom_type} {particle[0]:>6.2f} {particle[1]:>6.2f} {particle[2]:>6.2f}\n')
         
         # Write cluster size distribution

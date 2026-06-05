@@ -1,0 +1,103 @@
+SLURM_JOBID=35845172
+SLURM_JOB_NODELIST=g3065
+SLURM_NNODES=1
+SLURMTMPDIR=
+working directory = /mmfs1/gscratch/cheme/mzorman/06_MLP/MC/1r_tests/driver
+INFO - Starting job: ../NaCl_jobs/150mM_adapUS_large
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
+INFO - Concentration: 0.15 M
+INFO - Box length: 140.40071931267755 Å
+INFO - Number of particles: 500
+INFO - Bias: linear
+INFO - Using seed from config file: 11
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
+INFO - Concentration: 0.15 M
+INFO - Box length: 140.40071931267755 Å
+INFO - Number of particles: 500
+INFO - Bias: linear
+INFO - Using seed from config file: 12
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
+INFO - Concentration: 0.15 M
+INFO - Box length: 140.40071931267755 Å
+INFO - Number of particles: 500
+INFO - Bias: linear
+INFO - Using seed from config file: 13
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
+INFO - Concentration: 0.15 M
+INFO - Box length: 140.40071931267755 Å
+INFO - Number of particles: 500
+INFO - Bias: linear
+INFO - Using seed from config file: 14
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
+INFO - Concentration: 0.15 M
+INFO - Box length: 140.40071931267755 Å
+INFO - Number of particles: 500
+INFO - Bias: linear
+INFO - Using seed from config file: 15
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
+INFO - Concentration: 0.15 M
+INFO - Box length: 140.40071931267755 Å
+INFO - Number of particles: 500
+INFO - Bias: linear
+INFO - Using seed from config file: 16
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
+INFO - Concentration: 0.15 M
+INFO - Box length: 140.40071931267755 Å
+INFO - Number of particles: 500
+INFO - Bias: linear
+INFO - Using seed from config file: 17
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
+INFO - Concentration: 0.15 M
+INFO - Box length: 140.40071931267755 Å
+INFO - Number of particles: 500
+INFO - Bias: linear
+INFO - Using seed from config file: 18
+INFO - Generating initial bias
+INFO - Iteration 1: Updated bias saved to ./../NaCl_jobs/150mM_adapUS_large/bias_potential.npy
+INFO - Iteration 2: Updated bias saved to ./../NaCl_jobs/150mM_adapUS_large/bias_potential.npy
+INFO - Iteration 3: Updated bias saved to ./../NaCl_jobs/150mM_adapUS_large/bias_potential.npy
+INFO - Iteration 4: Updated bias saved to ./../NaCl_jobs/150mM_adapUS_large/bias_potential.npy
+INFO - Iteration 5: Updated bias saved to ./../NaCl_jobs/150mM_adapUS_large/bias_potential.npy
+INFO - Iteration 6: Updated bias saved to ./../NaCl_jobs/150mM_adapUS_large/bias_potential.npy
+INFO - Iteration 7: Updated bias saved to ./../NaCl_jobs/150mM_adapUS_large/bias_potential.npy
+INFO - Iteration 8: Updated bias saved to ./../NaCl_jobs/150mM_adapUS_large/bias_potential.npy
+multiprocessing.pool.RemoteTraceback: 
+"""
+Traceback (most recent call last):
+  File "/gscratch/cheme/mzorman/03_misc/miniconda3/envs/mlp_cuda/lib/python3.12/multiprocessing/pool.py", line 125, in worker
+    result = (True, func(*args, **kwds))
+                    ^^^^^^^^^^^^^^^^^^^
+  File "/gscratch/cheme/mzorman/03_misc/miniconda3/envs/mlp_cuda/lib/python3.12/multiprocessing/pool.py", line 48, in mapstar
+    return list(map(*args))
+           ^^^^^^^^^^^^^^^^
+  File "/mmfs1/gscratch/cheme/mzorman/06_MLP/MC/1r_tests/driver/simulation.py", line 141, in production_run_adapUS
+    sim.system.step(step_num=s)
+  File "/mmfs1/gscratch/cheme/mzorman/06_MLP/MC/1r_tests/driver/system.py", line 158, in step
+    selected_move.attempt_move(particle, Nin_idx)
+  File "/mmfs1/gscratch/cheme/mzorman/06_MLP/MC/1r_tests/driver/moves.py", line 356, in attempt_move
+    trial_energy = self.system.calc_full_energy()
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mmfs1/gscratch/cheme/mzorman/06_MLP/MC/1r_tests/driver/system.py", line 229, in calc_full_energy
+    return self.pmf.energies(self.positions)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mmfs1/gscratch/cheme/mzorman/06_MLP/MC/1r_tests/driver/utils.py", line 185, in energies
+    physics_prior_energies = self.calc_prior_energies(positions)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mmfs1/gscratch/cheme/mzorman/06_MLP/MC/1r_tests/driver/utils.py", line 197, in calc_prior_energies
+    return calc_coulomb_cut_numba(positions, self.charges, self.box_size,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ZeroDivisionError: division by zero
+"""
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/mmfs1/gscratch/cheme/mzorman/06_MLP/MC/1r_tests/driver/simulation.py", line 238, in <module>
+    results = pool.map(production_run_adapUS, simulations)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/gscratch/cheme/mzorman/03_misc/miniconda3/envs/mlp_cuda/lib/python3.12/multiprocessing/pool.py", line 367, in map
+    return self._map_async(func, iterable, mapstar, chunksize).get()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/gscratch/cheme/mzorman/03_misc/miniconda3/envs/mlp_cuda/lib/python3.12/multiprocessing/pool.py", line 774, in get
+    raise self._value
+ZeroDivisionError: division by zero

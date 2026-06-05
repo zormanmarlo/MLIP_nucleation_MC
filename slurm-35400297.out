@@ -1,46 +1,46 @@
-SLURM_JOBID=35400260
-SLURM_JOB_NODELIST=g3074
+SLURM_JOBID=35400297
+SLURM_JOB_NODELIST=g3047
 SLURM_NNODES=1
 SLURMTMPDIR=
 working directory = /mmfs1/gscratch/cheme/mzorman/06_MLP/MC/1r_tests/driver
-INFO - Starting job: ../NaCl_jobs/150mM_unbiased_test
-INFO - Concentration: 0.15 M
-INFO - Box length: 140.40071931267755 Å
+INFO - Starting job: ../NaCl_jobs/2M_unbiased_test
+INFO - Concentration: 2.0 M
+INFO - Box length: 59.2092764500872 Å
 INFO - Number of particles: 500
 INFO - Bias: None
 INFO - Using seed from config file: 11
-INFO - Concentration: 0.15 M
-INFO - Box length: 140.40071931267755 Å
+INFO - Concentration: 2.0 M
+INFO - Box length: 59.2092764500872 Å
 INFO - Number of particles: 500
 INFO - Bias: None
 INFO - Using seed from config file: 12
-INFO - Concentration: 0.15 M
-INFO - Box length: 140.40071931267755 Å
+INFO - Concentration: 2.0 M
+INFO - Box length: 59.2092764500872 Å
 INFO - Number of particles: 500
 INFO - Bias: None
 INFO - Using seed from config file: 13
-INFO - Concentration: 0.15 M
-INFO - Box length: 140.40071931267755 Å
+INFO - Concentration: 2.0 M
+INFO - Box length: 59.2092764500872 Å
 INFO - Number of particles: 500
 INFO - Bias: None
 INFO - Using seed from config file: 14
-INFO - Concentration: 0.15 M
-INFO - Box length: 140.40071931267755 Å
+INFO - Concentration: 2.0 M
+INFO - Box length: 59.2092764500872 Å
 INFO - Number of particles: 500
 INFO - Bias: None
 INFO - Using seed from config file: 15
-INFO - Concentration: 0.15 M
-INFO - Box length: 140.40071931267755 Å
+INFO - Concentration: 2.0 M
+INFO - Box length: 59.2092764500872 Å
 INFO - Number of particles: 500
 INFO - Bias: None
 INFO - Using seed from config file: 16
-INFO - Concentration: 0.15 M
-INFO - Box length: 140.40071931267755 Å
+INFO - Concentration: 2.0 M
+INFO - Box length: 59.2092764500872 Å
 INFO - Number of particles: 500
 INFO - Bias: None
 INFO - Using seed from config file: 17
-INFO - Concentration: 0.15 M
-INFO - Box length: 140.40071931267755 Å
+INFO - Concentration: 2.0 M
+INFO - Box length: 59.2092764500872 Å
 INFO - Number of particles: 500
 INFO - Bias: None
 INFO - Using seed from config file: 18

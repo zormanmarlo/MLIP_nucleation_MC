@@ -1,48 +1,56 @@
-SLURM_JOBID=35400260
-SLURM_JOB_NODELIST=g3074
+SLURM_JOBID=35402131
+SLURM_JOB_NODELIST=g3055
 SLURM_NNODES=1
 SLURMTMPDIR=
 working directory = /mmfs1/gscratch/cheme/mzorman/06_MLP/MC/1r_tests/driver
-INFO - Starting job: ../NaCl_jobs/150mM_unbiased_test
+INFO - Starting job: ../NaCl_jobs/150mM_adapUS
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 11
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 12
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 13
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 14
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 15
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 16
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 17
+WARNING - Parameter 'bias_path' not set for linear bias. Setting bias to zero
 INFO - Concentration: 0.15 M
 INFO - Box length: 140.40071931267755 Å
 INFO - Number of particles: 500
-INFO - Bias: None
+INFO - Bias: linear
 INFO - Using seed from config file: 18
 INFO - Running 8 markov chains
 INFO - Running equilibration
