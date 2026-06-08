@@ -20,6 +20,6 @@ module load cuda/12.4.1
 
 export PATH="/gscratch/cheme/mzorman/03_misc/miniconda3/bin:$PATH"
 conda activate mlp_cuda
-python simulation.py -jobname ../NaCl_jobs/2M_unbiased_capped -config configs/2M_dang_unbiased_capped.txt -np 8
+python simulation.py -jobname ../NaCl_jobs/2M_unbiased_capped -config configs/2M_dang_unbiased_capped.yaml -np 8
 
 exit 

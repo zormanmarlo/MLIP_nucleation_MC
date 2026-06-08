@@ -15,7 +15,6 @@ class System:
         self.kT = config.kT
         self.energy = 0.0
         self.bias_energy = 0.0
-        self.debug_mode = getattr(config, 'debug_mode', False)
 
         self.id = str(id).zfill(2)
         self.seed = config.seed + id
@@ -140,68 +139,30 @@ class System:
         if not self.active_moves:
             return  # No moves configured
 
-        energy_before = self.energy
-
         move_idx = np.random.choice(len(self.active_moves),
                                    p=self.move_probabilities)
         selected_move = self.active_moves[move_idx]
         move_name = self.move_names[move_idx]
 
-        # Handle move-specific parameter requirements
         particle = np.random.randint(self.config.num_particles)
 
         if 'nvt' in move_name:
-            # NVT moves need special handling
             self.find_target_cluster()
             particle = np.random.choice(self.target_clust_idx)
             Nin, Nin_idx = self.calc_in(particle)
             selected_move.attempt_move(particle, Nin_idx)
 
         elif move_name == 'inout_avbmc':
-            # Check if inout move is possible, fallback to outin if not
             Nin, Nin_idx = self.calc_in(particle)
-            if self.debug_mode:
-                logging.info(f"InOut selected: particle {particle}, Nin = {Nin}")
             if Nin >= 1:
-                # Particle has neighbors, inout move is possible
-                if self.debug_mode:
-                    logging.info(f"  -> Attempting InOut move")
                 selected_move.attempt_move(particle)
             else:
-                # No neighbors, fallback to outin move
-                if self.debug_mode:
-                    logging.info(f"  -> Falling back to OutIn move (no neighbors)")
                 for move_idx, move_name in enumerate(self.move_names):
                     if move_name == 'outin_avbmc':
                         self.active_moves[move_idx].attempt_move(particle)
                         break
         else:
             selected_move.attempt_move(particle)
-
-        # Debug logging for large energy changes
-        if self.debug_mode:
-            energy_change = self.energy - energy_before
-            if abs(energy_change) > 10000:  # Flag jumps > 10,000 kcal/mol
-                recalc_energy = self.calc_full_energy()
-                logging.warning(f"LARGE ENERGY JUMP at step {step_num}:")
-                logging.warning(f"  Move: {move_name}, Particle: {particle}")
-                logging.warning(f"  Energy before: {energy_before:.2f}")
-                logging.warning(f"  Energy after (cached): {self.energy:.2f}")
-                logging.warning(f"  Energy after (recalc): {recalc_energy:.2f}")
-                logging.warning(f"  Delta (cached): {energy_change:.2f}")
-                logging.warning(f"  Cache error: {abs(self.energy - recalc_energy):.2f}")
-
-                # Print AVBMC-specific debug info if available
-                if hasattr(selected_move, 'debug_avbmc_energy'):
-                    logging.warning(f"  --- AVBMC Details ---")
-                    if selected_move.debug_wnew is not None:
-                        logging.warning(f"  Rosenbluth wnew: {selected_move.debug_wnew:.6e}")
-                        logging.warning(f"  Rosenbluth wold: {selected_move.debug_wold:.6e}")
-                        logging.warning(f"  wnew/wold ratio: {selected_move.debug_components['rosenbluth_ratio']:.6e}")
-                    logging.warning(f"  AVBMC acceptance prob: {selected_move.debug_avbmc_energy:.6e}")
-                    logging.warning(f"  Components:")
-                    for key, value in selected_move.debug_components.items():
-                        logging.warning(f"    {key}: {value:.6e}")
 
     def calc_energy_delta(self, particle_idx, new_pos, old_pos):
         '''Calculate energy difference between new and old positions, including bias energy if applicable'''
@@ -309,3 +270,28 @@ class System:
         dist_vec = np.abs(pos1 - pos2)
         dist_vec = dist_vec - self.box_length * np.round(dist_vec / self.box_length)
         return np.linalg.norm(dist_vec)
+
+    def unwrap_positions(self, cluster_indices):
+        '''Unwrap cluster particle positions relative to the first particle, removing periodic boundary jumps'''
+        if len(cluster_indices) == 0:
+            return np.array([])
+        reference_pos = self.positions[cluster_indices[0]]
+        unwrapped = np.zeros((len(cluster_indices), 3))
+        unwrapped[0] = reference_pos
+        for i, idx in enumerate(cluster_indices[1:], start=1):
+            delta = self.positions[idx] - reference_pos
+            delta -= self.box_length * np.round(delta / self.box_length)
+            unwrapped[i] = reference_pos + delta
+        return unwrapped
+
+    def calc_rcut(self, clust=None, coordinates=False):
+        '''Calculate rcut as the maximum distance from the geometric center of the target cluster to its particles'''
+        clust = self.find_target_cluster() if clust is None else clust
+        positions = self.unwrap_positions(clust)
+        geometric_center = np.mean(positions, axis=0)
+        distances = np.linalg.norm(positions - geometric_center, axis=1)
+        rcut = np.max(distances)
+        if coordinates:
+            translated_positions = positions - geometric_center + self.box_length / 2
+            return rcut, translated_positions, self.types[clust]
+        return rcut

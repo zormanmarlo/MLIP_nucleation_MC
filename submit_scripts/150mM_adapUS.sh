@@ -20,6 +20,6 @@ module load cuda/12.4.1
 
 export PATH="/gscratch/cheme/mzorman/03_misc/miniconda3/bin:$PATH"
 conda activate mlp_cuda
-python simulation.py -jobname ../NaCl_jobs/150mM_adapUS -config configs/150mM_dang_adapUS.txt -np 8 -adapUS
+python simulation.py -jobname ../NaCl_jobs/150mM_adapUS -config configs/150mM_dang_adapUS.yaml -np 8 -adapUS
 
 exit 
