@@ -2,7 +2,7 @@
 
 ## Overview
 A Monte Carlo code that simulates speciation and nucleation of ions in a continuous coordinate space. Ions are represented atomistically. Interactions are calculated with a physical prior + MLIP.
-Framework is currently configured to calculate energy with LAMMPS and uses a Nequip model. Codebase is WIP with branches providing specific functionality.
+Framework is currently configured to calculate energy with LAMMPS and uses an Allegro model. Codebase is WIP with branches providing specific functionality.
  
 ## Files and Classes
 
