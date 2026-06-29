@@ -7,7 +7,7 @@ from utils import *
 import logging
 
 class System:
-    def __init__(self, config, id=0):
+    def __init__(self, config, id=0, debug=False):
         '''Initialize System with configuration parameters, PMF, and move objects'''
         self.config = config
         self.box_length = config.box_length
@@ -15,6 +15,10 @@ class System:
         self.kT = config.kT
         self.energy = 0.0
         self.bias_energy = 0.0
+
+        # Debug logging: when on, each move stashes a record here for the runner to write
+        self.debug = debug
+        self._debug = None
 
         self.id = str(id).zfill(2)
         self.seed = config.seed + id
@@ -40,7 +44,7 @@ class System:
         self.bias = None
         if config.bias_type is not None:
             self.bias = config.bias
-    
+
     def init_pmf(self):
         '''Initialize PMF object with potential file from config'''
         charge_map = {0: 1.0, 1: -1.0}  # Example charge mapping for two types
@@ -50,6 +54,7 @@ class System:
     def init_positions(self, input_path=None, multi=False):
         '''Initialize particle positions either from input file or randomly, ensuring proper ratios and minimum separations'''
         if input_path:
+            # used for US simulations where we want each markov chain to start from a different seed
             filename = input_path.strip(".xyz") + f"_{self.id}.xyz" if multi else input_path
             with open(f"inputs/{filename}", 'r') as f:
                 lines = f.readlines()
@@ -139,6 +144,8 @@ class System:
         if not self.active_moves:
             return  # No moves configured
 
+        self._debug = None  # cleared each step so stale records aren't re-logged
+
         move_idx = np.random.choice(len(self.active_moves),
                                    p=self.move_probabilities)
         selected_move = self.active_moves[move_idx]
@@ -146,26 +153,37 @@ class System:
 
         particle = np.random.randint(self.config.num_particles)
 
+        # Track which move instance actually runs, and its rejection count beforehand, so
+        # debug logging can infer acceptance without touching any move's accept/reject code.
         if 'nvt' in move_name:
             self.find_target_cluster()
             particle = np.random.choice(self.target_clust_idx)
             Nin, Nin_idx = self.calc_in(particle)
-            selected_move.attempt_move(particle, Nin_idx)
+            invoked = selected_move
+            rej_before = invoked.rejections
+            invoked.attempt_move(particle, Nin_idx)
 
         elif move_name == 'inout_avbmc':
             Nin, Nin_idx = self.calc_in(particle)
             if Nin >= 1:
-                selected_move.attempt_move(particle)
+                invoked = selected_move
             else:
-                for move_idx, move_name in enumerate(self.move_names):
-                    if move_name == 'outin_avbmc':
-                        self.active_moves[move_idx].attempt_move(particle)
-                        break
+                invoked = next(self.active_moves[mi] for mi, mn in enumerate(self.move_names)
+                               if mn == 'outin_avbmc')
+            rej_before = invoked.rejections
+            invoked.attempt_move(particle)
         else:
-            selected_move.attempt_move(particle)
+            invoked = selected_move
+            rej_before = invoked.rejections
+            invoked.attempt_move(particle)
+
+        if self.debug and self._debug is not None:
+            self._debug += (1 if invoked.rejections == rej_before else 0,)
 
     def calc_energy_delta(self, particle_idx, new_pos, old_pos):
         '''Calculate energy difference between new and old positions, including bias energy if applicable'''
+        # Snapshot the cluster so a rejected move can restore it (see restore_cluster).
+        self._clust_before = list(self.target_clust_idx)
         if self.bias is None:
             old_energy = self.energy
             self.positions[particle_idx] = new_pos
@@ -174,43 +192,46 @@ class System:
             delta_bias_energy = 0.0
         # If bias is active must calculate change in cluster size
         else:
-            old_cluster = len(self.find_target_cluster())
+            old_cluster = len(self.target_clust_idx)
             old_energy = self.energy
             self.positions[particle_idx] = new_pos
+
+            # Always recompute the target cluster fully (updates cache).
             new_cluster = len(self.find_target_cluster())
+
             new_energy = self.calc_full_energy()
             delta_energy = new_energy - old_energy
             delta_bias_energy = self.bias.denergy(new_cluster, old_cluster)
 
+            if self.debug:
+                self._debug = (old_energy, new_energy, old_cluster, new_cluster, delta_bias_energy)
+
         self.positions[particle_idx] = old_pos  # Reset position after calculation
         return delta_energy, delta_bias_energy
-    
+
+    def restore_cluster(self):
+        '''Restore the target cluster cache (index list and size) after a rejected move.'''
+        self.target_clust_idx = self._clust_before
+
     def calc_full_energy(self):
         '''Calculate total energy of the system using physics prior and MLP'''
         return self.pmf.energies(self.positions)
 
     def find_target_cluster(self, target_idx=0):
-        '''Find all particles connected to target particle within cluster cutoff distance using breadth-first search'''        
-        # Start with the target particle
-        # tree = cKDTree(self.positions, boxsize=self.box_length+0.001)
+        '''Find all particles connected to target particle within cluster cutoff distance using breadth-first search'''
         visited = set()
-        queue = [target_idx]
+        queue = deque([target_idx])
         cluster = []
-        
+
         while queue:
-            current = queue.pop(0)
+            current = queue.popleft()
             if current not in visited:
                 visited.add(current)
                 cluster.append(current)
-                # neighbors = tree.query_ball_point(self.positions[current], self.clust_cutoff)
-                # for neighbor in neighbors:
-                    # if neighbor not in visited:
-                        # queue.append(neighbor)
                 neighbors = find_neighbors_numba(self.positions, self.positions[current], self.clust_cutoff, self.box_length)
-                queue.extend([n for n in neighbors if n not in visited])
-        
-        # Cluster around target particle found
-        # self.target_clust_idx = cluster
+                queue.extend(n for n in neighbors if n not in visited)
+
+        self.target_clust_idx = cluster
         return cluster
     
     def find_clusters(self):

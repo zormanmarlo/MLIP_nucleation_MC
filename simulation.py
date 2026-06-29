@@ -2,6 +2,7 @@ import os
 import shutil
 import argparse
 import faulthandler
+import time
 faulthandler.enable()
 
 import cProfile
@@ -13,10 +14,11 @@ import multiprocessing as mp
 
 from system import System
 from utils import *
+from utils import _clear_mpi_env
 from config import Config
 
 class Simulation:
-    def __init__(self, config_file, jobname, ID=0, path=".", multi_inputs=False, restart=False):
+    def __init__(self, config_file, jobname, ID=0, path=".", multi_inputs=False, restart=False, debug=False):
         '''Initialize simulation with configuration, system setup, and output file paths'''
         self.config = Config(config_file)
 
@@ -28,7 +30,7 @@ class Simulation:
         logger.info(f"Using seed from config file: {self.config.seed + ID}")
         np.random.seed(self.config.seed + ID)
 
-        self.system = System(self.config, ID)
+        self.system = System(self.config, ID, debug=debug)
         self.system.init_positions(input_path=self.config.input_path, multi=multi_inputs)
         self.target_sizes = []
 
@@ -44,6 +46,8 @@ class Simulation:
             self.rcut_file = f'{self.output_dir}/rcut-{self.ID}.log'
         if self.config.parameters['output_rcut_traj']:
             self.rcut_traj_file = f'{self.output_dir}/rcut_traj-{self.ID}.xyz'
+        if self.system.debug:
+            self.debug_file = f'{self.output_dir}/debug-{self.ID}.log'
 
         if restart:
             self._restore_from_checkpoint()
@@ -58,6 +62,9 @@ class Simulation:
                 self._append_line(self.colvar_file, '# step size bias_energy')
             if hasattr(self, 'rcut_file'):
                 self._append_line(self.rcut_file, '# step rcut')
+            if hasattr(self, 'debug_file'):
+                self._append_line(self.debug_file,
+                                  '# step old_energy new_energy old_size new_size bias_delta accepted(1=yes,0=no)')
 
     @staticmethod
     def _append_line(path, line):
@@ -68,14 +75,15 @@ class Simulation:
     def save_checkpoint(self, step):
         '''Save simulation state to checkpoint file for later restart'''
         checkpoint_file = f'{self.output_dir}/checkpoint-{self.ID}.npz'
-        rng_state = np.random.get_state()
+        rng_arr = np.empty(1, dtype=object)
+        rng_arr[0] = np.random.get_state()
         np.savez(
             checkpoint_file,
             step=np.array(step),
             positions=self.system.positions,
             energy=np.array(self.system.energy),
             bias_energy=np.array(self.system.bias_energy),
-            rng_state=np.array(rng_state, dtype=object),
+            rng_state=rng_arr,
         )
 
     def load_checkpoint(self):
@@ -92,7 +100,7 @@ class Simulation:
             'positions': data['positions'],
             'energy': float(data['energy']),
             'bias_energy': float(data['bias_energy']),
-            'rng_state': data['rng_state'].item(),
+            'rng_state': data['rng_state'].item() if data['rng_state'].size == 1 else tuple(data['rng_state']),
         }
 
     def _restore_from_checkpoint(self):
@@ -127,6 +135,11 @@ class Simulation:
     def write_output(self, step):
         '''Write current simulation state to all output files including energy, trajectory, clusters, and statistics'''
         clust_sizes, target_clust = self.system.find_clusters()
+
+        # Recompute the bias energy from the current cluster size so the logged value is
+        # the exact harmonic bias (no accumulated drift/offset).
+        if self.system.bias is not None:
+            self.system.bias_energy = self.system.bias.energy(len(target_clust))
 
         # Collective variable output (umbrella sampling)
         if hasattr(self, 'colvar_file'):
@@ -175,6 +188,16 @@ class Simulation:
         self.save_checkpoint(step)
 
 
+def apply_results(simulations, results):
+    '''Copy worker-evolved state (positions/energy/target_sizes) back into the main-process sim objects'''
+    for result in results:
+        if result is None:
+            continue
+        worker_id = int(result['ID'])
+        simulations[worker_id].target_sizes = result['target_sizes']
+        simulations[worker_id].system.positions = result['positions']
+        simulations[worker_id].system.energy = result['energy']
+
 def equal_hist(dist):
     '''Check if histogram distribution is sufficiently flat for adaptive umbrella sampling convergence'''
     max_diff = np.max(np.abs(np.diff(dist)))
@@ -187,11 +210,24 @@ def production_run(sim):
     '''Execute production phase of simulation with periodic output writing'''
     if sim.system.energy == 0.0:
         sim.system.energy = sim.system.calc_full_energy()
+    t0 = time.perf_counter()
     for s in range(sim.restart_step + 1, sim.config.parameters["prod_steps"]):
         sim.system.step(step_num=s)
+        if sim.system.debug and sim.system._debug is not None:
+            sim._append_line(sim.debug_file, f'{s} ' + ' '.join(f'{v}' for v in sim.system._debug))
         if s % sim.config.parameters["output_interval"] == 0:
             sim.write_output(s)
-    return None  # Don't return sim - can't pickle after model loads
+    elapsed = time.perf_counter() - t0
+    n_steps = sim.config.parameters["prod_steps"] - sim.restart_step - 1
+    logger.info(f"[{sim.ID}] Production: {n_steps} steps in {elapsed:.1f}s ({n_steps/elapsed:.1f} steps/s)")
+    # Return picklable state (not sim - can't pickle after model loads) so the
+    # caller can carry positions/energy forward across pool.map boundaries.
+    return {
+        'target_sizes': sim.target_sizes,
+        'positions': sim.system.positions.copy(),
+        'energy': sim.system.energy,
+        'ID': sim.ID
+    }
 
 def production_run_adapUS(sim):
     '''Production run for adaptive US - reads bias from file, returns statistics and positions'''
@@ -203,8 +239,17 @@ def production_run_adapUS(sim):
     if sim.system.energy == 0.0:
         sim.system.energy = sim.system.calc_full_energy()
 
+    # Resync the absolute bias energy to the current configuration under the
+    # (possibly just-updated) bias, so logged bias_energy stays consistent with
+    # the active bias instead of carrying the value accumulated under the old one.
+    if sim.system.bias is not None:
+        current_size = len(sim.system.find_target_cluster())
+        sim.system.bias_energy = sim.system.bias.energy(current_size)
+
     for s in range(sim.restart_step + 1, sim.config.parameters["prod_steps"]):
         sim.system.step(step_num=s)
+        if sim.system.debug and sim.system._debug is not None:
+            sim._append_line(sim.debug_file, f'{s} ' + ' '.join(f'{v}' for v in sim.system._debug))
         if s % sim.config.parameters["output_interval"] == 0:
             sim.write_output(s)
 
@@ -225,7 +270,12 @@ def equilibration_run(sim):
     sim.system.energy = sim.system.calc_full_energy()
     for s in range(1, sim.config.parameters["equil_steps"]):
         sim.system.step(step_num=s)
-    return None  # Don't return sim - can't pickle after model loads
+    return {
+        'target_sizes': sim.target_sizes,
+        'positions': sim.system.positions.copy(),
+        'energy': sim.system.energy,
+        'ID': sim.ID
+    }
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='?S-I-M-U-L-A-T-E?')
@@ -236,6 +286,7 @@ if __name__ == "__main__":
     parser.add_argument('-restart', action='store_true', help="Restart from checkpoint files in the job directory")
     parser.add_argument('-multi_inputs', action='store_true', help="Use multiple input files")
     parser.add_argument('-path', type=str, default=".", help="Path to save output")
+    parser.add_argument('-debug', action='store_true', help="Write per-move debug log (debug-<ID>.log)")
     args = parser.parse_args()
 
     logger.info("Starting job: "+str(args.jobname))
@@ -255,7 +306,7 @@ if __name__ == "__main__":
 
     simulations = [
         Simulation(args.config, args.jobname, ID=i, path=args.path,
-                   multi_inputs=args.multi_inputs, restart=args.restart)
+                   multi_inputs=args.multi_inputs, restart=args.restart, debug=args.debug)
         for i in range(args.np)
     ]
 
@@ -269,10 +320,10 @@ if __name__ == "__main__":
             ps = pstats.Stats(pr).sort_stats('cumulative')
             ps.print_stats(100)
         else:
-            with mp.Pool(processes=args.np) as pool:
+            with mp.Pool(processes=args.np, initializer=_clear_mpi_env) as pool:
                 logger.info(f"Running {args.np} markov chains")
                 logger.info("Running equilibration")
-                pool.map(equilibration_run, simulations)
+                apply_results(simulations, pool.map(equilibration_run, simulations))
                 logger.info("Running production")
                 pool.map(production_run, simulations)
 
@@ -289,11 +340,17 @@ if __name__ == "__main__":
             for sim in simulations:
                 sim.config.parameters["prod_steps"] = saved_prod_steps
             logger.info(f"Resuming adapUS from iteration {current_it}, prod_steps={saved_prod_steps}")
+            bias_file_path = f"{job_dir}/bias_potential.npy"
+            if os.path.exists(bias_file_path):
+                saved_bias = np.load(bias_file_path)
+                for sim in simulations:
+                    sim.system.bias.bias = saved_bias.copy()
+                logger.info("Loaded bias_potential.npy into main process sim objects")
         else:
             # Fresh start: run unbiased equil + initial production
-            with mp.Pool(processes=args.np) as pool:
-                pool.map(equilibration_run, simulations)
-                pool.map(production_run, simulations)
+            with mp.Pool(processes=args.np, initializer=_clear_mpi_env) as pool:
+                apply_results(simulations, pool.map(equilibration_run, simulations))
+                apply_results(simulations, pool.map(production_run, simulations))
             for sim in simulations:
                 sim.target_sizes = []
 
@@ -304,14 +361,10 @@ if __name__ == "__main__":
         while cont:
             current_it += 1
 
-            with mp.Pool(processes=args.np) as pool:
+            with mp.Pool(processes=args.np, initializer=_clear_mpi_env) as pool:
                 results = pool.map(production_run_adapUS, simulations)
 
-            for result in results:
-                worker_id = int(result['ID'])
-                simulations[worker_id].target_sizes = result['target_sizes']
-                simulations[worker_id].system.positions = result['positions']
-                simulations[worker_id].system.energy = result['energy']
+            apply_results(simulations, results)
 
             cluster_counts = np.concatenate([sim.target_sizes for sim in simulations])
             dist = np.histogram(cluster_counts, bins=np.arange(1, simulations[0].config.parameters["max_target"]+2))[0]

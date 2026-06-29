@@ -1,10 +1,8 @@
 import numpy as np
 from numba import njit
+from ctypes import c_double, POINTER
 import logging
 import math
-from ase import Atoms
-#import cuequivariance_torch
-from nequip.ase import NequIPCalculator
 
 def setup_logger():
     '''Initialize logger for Monte Carlo simulation with appropriate formatting and handlers'''
@@ -119,86 +117,74 @@ def find_neighbors_numba(positions, pos1, cutoff, box_length):
     return neighbors
 
 
-@njit(cache=False)
-def calc_coulomb_cut_numba(positions, charges, box_size, cutoff, ke_eff):
-    '''Calculate electrostatic energy using plain truncated Coulomb (coul/cut) with PBC (numba-optimized).'''
-    n_atoms = len(positions)
-    total_energy = 0.0
+def _clear_mpi_env():
+    '''Strip OpenMPI/PMI env vars so each forked LAMMPS worker starts MPI in standalone mode'''
+    import os
+    for key in list(os.environ.keys()):
+        if any(key.startswith(p) for p in ('OMPI_', 'PMIX_', 'PMI_', 'ORTE_', 'I_MPI_')):
+            del os.environ[key]
 
-    for i in range(n_atoms):
-        for j in range(i + 1, n_atoms):
-            dx = positions[j, 0] - positions[i, 0]
-            dy = positions[j, 1] - positions[i, 1]
-            dz = positions[j, 2] - positions[i, 2]
-
-            dx -= box_size * round(dx / box_size)
-            dy -= box_size * round(dy / box_size)
-            dz -= box_size * round(dz / box_size)
-
-            r = math.sqrt(dx*dx + dy*dy + dz*dz)
-
-            if r >= cutoff:
-                continue
-
-            if r < 0.01:
-                return 1e10
-
-            total_energy += ke_eff * charges[i] * charges[j] / r
-
-    return total_energy
 
 class PMF:
     def __init__(self, types, charges, box_size, model_path):
-        '''Set parameters for physics prior and load MLP'''
-        # system settings
+        '''Set parameters and build LAMMPS atom ordering'''
         self.types = np.array(types, dtype=np.int32)
-        self.charges = np.array(charges, dtype=np.float64)
         self.box_size = box_size
-        type_to_symbol = {0: 'Na', 1: 'Cl'}
-        self.symbols = [type_to_symbol[t] for t in types]
-        # parameters
-        self.cutoff = 25.0
-        self.dielectric = 73.0
-        self.ke_eff = 14.39965 / self.dielectric  # eV·Å/e²
-
-        # NequIP setup - LAZY LOADING (defer model loading until first use)
-        self.atoms = Atoms(symbols=self.symbols, positions=np.zeros((len(self.types), 3)), cell=[box_size]*3, pbc=True)
-        self.atoms.calc = None  # Ensure no calculator is attached to atoms object
-        # Store model configuration instead of loading immediately
         self.model_path = model_path
-        self.device = 'cuda'
-        self.chemical_symbols = ['Na', 'Cl']
-        self.calc = None  # Model will be loaded on first call to energies()
+        self.n_na = int(np.sum(self.types == 0))
+        self.n_cl = int(np.sum(self.types == 1))
+        # LAMMPS creates Na block then Cl block; map Python indices to that order
+        self.lammps_order = np.concatenate([
+            np.where(self.types == 0)[0],
+            np.where(self.types == 1)[0],
+        ])
+        self.lmp = None  # initialized on first call
+        self._pos_buffer = None  # allocated alongside lmp
 
-    def _ensure_model_loaded(self):
-        '''Load the NequIP model on first use (lazy loading for multiprocessing compatibility)'''
-        if self.calc is None:
-            self.calc = NequIPCalculator.from_compiled_model(
-                compile_path=self.model_path,
-                device=self.device,
-                chemical_symbols=self.chemical_symbols
-            )
-            self.atoms.calc = self.calc
+    def _ensure_lammps_loaded(self):
+        '''Initialize LAMMPS on first use (lazy loading for multiprocessing compatibility)'''
+        if self.lmp is None:
+            from lammps import lammps
+            self.lmp = lammps(cmdargs=['-screen', 'none', '-log', 'none'])
+            self._pos_buffer = np.zeros(len(self.types) * 3, dtype=np.float64)
+            self._pos_ptr = self._pos_buffer.ctypes.data_as(POINTER(c_double))
+            L = self.box_size
+            self.lmp.commands_string(f"""
+units metal
+atom_style charge
+boundary p p p
+newton off
+atom_modify map array
+
+region box block 0 {L} 0 {L} 0 {L} units box
+create_box 2 box
+
+mass 1 22.98977
+mass 2 35.453
+
+create_atoms 1 random {self.n_na} 12345 box overlap 1.5 maxtry 1000
+create_atoms 2 random {self.n_cl} 67890 box overlap 1.5 maxtry 1000
+
+set type 1 charge  1.0
+set type 2 charge -1.0
+
+pair_style hybrid/overlay nequip coul/cut 25.0
+pair_coeff * * nequip {self.model_path} Na Cl
+pair_coeff * * coul/cut
+
+dielectric 73.0
+
+neighbor 2.0 bin
+neigh_modify every 1 delay 0 check yes
+""")
 
     def energies(self, positions):
-        '''Calculate total energy with physics priors and MLP'''
-        # Ensure model is loaded (only happens once per process)
-        self._ensure_model_loaded()
-
-        physics_prior_energies = self.calc_prior_energies(positions)
-
-        self.atoms.set_positions(positions)
-        energy = self.atoms.get_potential_energy()
-
-        total_energy = physics_prior_energies + energy
-        # convert from eV to kcal/mol
-        total_energy *= 23.0609
-        return total_energy
-
-    def calc_prior_energies(self, positions):
-        '''Calculate total Coulomb energy (coul/cut, 25 Å cutoff, dielectric 73)'''
-        return calc_coulomb_cut_numba(positions, self.charges, self.box_size,
-                                     self.cutoff, self.ke_eff)
+        '''Calculate total energy via LAMMPS (nequip MLIP + coul/cut prior), returns kcal/mol'''
+        self._ensure_lammps_loaded()
+        self._pos_buffer[:] = positions[self.lammps_order].ravel()
+        self.lmp.scatter_atoms("x", 1, 3, self._pos_ptr)
+        self.lmp.command("run 0 post no")
+        return self.lmp.get_thermo("pe") * 23.0609
 
 class Bias:
     def __init__(self, max_size=200, min_size=0, path=None, center=0, type="harmonic", force_constant=0.0, kT=0.596):
@@ -231,7 +217,11 @@ class Bias:
             if self.type == "harmonic":
                 bias = self.force_constant/2*(new-self.center)**2 - self.force_constant/2*(old-self.center)**2
             elif self.type == "linear":
-                bias = self.bias[new-1] - self.bias[old-1]
+                # Clamp indices to the bias array bounds: `old` (and defensively `new`)
+                # can exceed the table when a cached cluster has drifted past max_size.
+                new_idx = min(max(new-1, 0), self.num_bins-1)
+                old_idx = min(max(old-1, 0), self.num_bins-1)
+                bias = self.bias[new_idx] - self.bias[old_idx]
         return bias
     
     def energy(self, size):
@@ -242,7 +232,8 @@ class Bias:
             if self.type == "harmonic":
                 bias = self.force_constant/2*(size-self.center)**2
             elif self.type == "linear":
-                bias = self.bias[size-1]
+                size_idx = min(max(size-1, 0), self.num_bins-1)
+                bias = self.bias[size_idx]
         return bias
     
     # Update bias for adaptive US

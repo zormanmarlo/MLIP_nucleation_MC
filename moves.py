@@ -45,6 +45,7 @@ class TranslationMove(Move):
         acc_prob = min(1, np.exp(np.clip((-(delta_energy+bias_energy)/self.system.kT), -500, 500)))
         if np.random.rand() >= acc_prob:
             self.rejections += 1
+            self.system.restore_cluster()
         else:
             self.system.positions[particle_idx] = new_pos
             self.system.energy += delta_energy
@@ -68,6 +69,7 @@ class SwapMove(Move):
         acc_prob = min(1, np.exp(np.clip((-(delta_energy+bias_energy)/self.system.kT), -500, 500)))
         if np.random.rand() >= acc_prob:
             self.rejections += 1
+            self.system.restore_cluster()
         else:
             self.system.positions[particle_idx] = new_pos
             self.system.energy += delta_energy
@@ -103,6 +105,7 @@ class InOutAVBMCMove(Move):
 
         if np.random.rand() >= acc_prob:
             self.rejections += 1
+            self.system.restore_cluster()
         else:
             self.system.positions[target_idx] = new_pos
             self.system.energy += delta_energy
@@ -187,11 +190,18 @@ class OutInAVBMCMove(Move):
 
         delta_energy = new_energy - old_energy
 
+        if self.system.debug and self.system.bias is not None:
+            self.system._debug = (old_energy, new_energy,
+                                  len(self.system.tmp_target_clust_idx),
+                                  len(self.system.target_clust_idx), bias_energy)
+
         avbmc_energy = np.exp(-bias_energy/self.system.kT) * (wnew/wold) * (self.Vin / self.Vout) * ((self.system.num_particles - Nin) / (Nin + 1))
         acc_prob = min(1, avbmc_energy)
 
         if np.random.rand() >= acc_prob:
             self.system.positions[target_idx] = old_pos
+            if self.system.bias is not None:
+                self.system.target_clust_idx = self.system.tmp_target_clust_idx
             self.rejections += 1
         else:
             self.system.energy += delta_energy
@@ -239,6 +249,7 @@ class NVTInOutMove(Move):
 
         if np.random.rand() >= acc_prob:
             self.rejections += 1
+            self.system.restore_cluster()
         else:
             self.system.positions[target_idx] = new_pos
             self.system.energy += delta_energy
@@ -319,12 +330,19 @@ class NVTOutInMove(Move):
 
         delta_energy = new_energy - old_energy
 
+        if self.system.debug and self.system.bias is not None:
+            self.system._debug = (old_energy, new_energy,
+                                  len(self.system.tmp_target_clust_idx),
+                                  len(self.system.target_clust_idx), bias_energy)
+
         avbmc_energy = np.exp(-bias_energy/self.system.kT) * (wnew/wold) * (self.Vin / self.Vout) * ((self.system.num_particles - len(self.system.tmp_target_clust_idx)) / (Nin + 1)) * ((len(self.system.tmp_target_clust_idx)) / (len(self.system.tmp_target_clust_idx)+1))
 
         acc_prob = min(1, avbmc_energy)
 
         if np.random.rand() >= acc_prob:
             self.system.positions[target_idx] = old_pos
+            if self.system.bias is not None:
+                self.system.target_clust_idx = self.system.tmp_target_clust_idx
             self.rejections += 1
         else:
             self.system.energy += delta_energy

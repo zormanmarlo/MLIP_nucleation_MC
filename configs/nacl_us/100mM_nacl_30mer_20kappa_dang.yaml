@@ -1,0 +1,32 @@
+# CONCENTRATION
+concentration: 0.1
+num_particles: 1000
+
+# SIMULATION SETTINGS
+equil_steps: 100
+prod_steps: 500000
+output_interval: 100
+internal_interval: 1000
+seed: 11
+
+# BIAS SETTINGS
+bias_type: harmonic
+bias_center: 30
+bias_k: 20
+
+# MOVE RATES
+avbmc_rate: 0.04
+nvt_rate: 0.01
+translation_rate: 0.95
+swap_rate: 0.0
+max_displacement: 1.5
+
+# CLUSTER DEFINITION
+upper_bonded_cutoff: 3.5
+lower_bonded_cutoff: 2.5
+clust_cutoff: 3.5
+
+# INPUT FILES
+model_path: /gscratch/cheme/mzorman/06_MLP/models/NaCl/NaCl_0518_1r.nequip.pth
+# omit idx for input file and use -multi_inputs flag to get system.py to add it back in
+input_path: nacl_us/100mM_nacl_1000_30mer.xyz

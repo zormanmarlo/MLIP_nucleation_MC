@@ -14,6 +14,7 @@ class Config:
         'energy_cutoff': 20,
         'n_rosenbluth_trials': 32,
         'bias_type': None,
+        'min_target': 0,
         'output_rcut': False,
         'output_rcut_traj': False,
     }
@@ -145,12 +146,14 @@ class Config:
                 logger.warning("Parameter 'bias_k' not set for harmonic bias. Defaulting to 1.0.")
                 self.parameters['bias_k'] = 1.0
             self.bias = Bias(type='harmonic', center=self.parameters['bias_center'],
-                             force_constant=self.parameters['bias_k'])
+                             force_constant=self.parameters['bias_k'],
+                             min_size=self.parameters['min_target'])
         elif bias_type == 'linear':
             if 'bias_file' not in self.parameters:
                 logger.warning("Parameter 'bias_file' not set for linear bias. Setting bias to zero")
             self.bias = Bias(type='linear', path=self.parameters.get('bias_file'),
-                             max_size=self.parameters.get('max_target', 200))
+                             max_size=self.parameters.get('max_target', 200),
+                             min_size=self.parameters['min_target'])
         else:
             self.bias = None
 
