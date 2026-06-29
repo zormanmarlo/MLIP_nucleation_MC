@@ -1,1 +1,4 @@
 slurm*
+inputs/nacl_us/
+submit_scripts/*
+US_files/
